@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# ROS/Colcon specific (just in case)
+/build/
+/install/
+/log/
+
+# IDE settings
+.vscode/
+.idea/

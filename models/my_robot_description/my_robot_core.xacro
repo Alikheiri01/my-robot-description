@@ -1,0 +1,254 @@
+<?xml version="1.0"?>
+<robot name="my_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="inertial_macros.xacro" />
+
+  <!-- ============================================================= -->
+  <!-- BASE_LINK IS NOW AT THE EXACT CENTER OF THE FOUR WHEELS       -->
+  <!-- ============================================================= -->
+  <link name="base_link">
+   
+  </link>
+
+  <!-- ============================================================= -->
+  <!-- CHASSIS (the old "base") is now attached offset from the      -->
+  <!-- centered base_link so everything stays in the same place      -->
+  <!-- ============================================================= -->
+  <joint name="chassis_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="chassis"/>
+    <!-- This moves the entire old robot so base_link ends up in the middle -->
+    <origin xyz="-0.3295 0.33054 0" rpy="0 0 0"/>
+  </joint>
+
+<link name="chassis">
+   <xacro:inertial_box mass="25.0" x="0.6" y="0.4" z="0.2">
+        <origin xyz="0.3539 -0.33747 0.041313" rpy="0 0 0"/>
+    </xacro:inertial_box>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://my_robot_description/models/my_robot_description/meshes/base_link.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.75294 0.75294 0.75294 1"/>
+      </material>
+    </visual>
+
+  <collision>
+      <origin xyz="0.3539 -0.33747 0.041313" rpy="0 0 0"/>
+      
+      <geometry>
+        <box size="0.65 0.30 0.15"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <gazebo reference="chassis">
+    <material>Gazebo/DarkGrey</material>
+  </gazebo>
+
+  <!-- ============================================================= -->
+  <!-- WHEELS – now attached to the centered base_link               -->
+  <!-- ============================================================= -->
+
+  <!-- BACK LEFT -->
+  <joint name="BL_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="BL_link"/>
+    <origin xyz="-0.3295  0.33054 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- BACK RIGHT -->
+  <joint name="BR_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="BR_link"/>
+    <origin xyz="-0.3295 -0.33054 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- FRONT LEFT -->
+  <joint name="FL_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="FL_link"/>
+    <origin xyz="0.3295  0.33054 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- FRONT RIGHT -->
+  <joint name="FR_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="FR_link"/>
+    <origin xyz="0.3295 -0.33054 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ==================== WHEEL LINKS (unchanged) ==================== -->
+  <link name="BL_link">
+  <xacro:inertial_cylinder mass="1.43" length="0.05" radius="0.0925">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://my_robot_description/models/my_robot_description/meshes/BL_link.STL"/>
+      </geometry>
+      <material name=""><color rgba="0.79216 0.81961 0.93333 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.03 0" rpy="${pi/2} 0 0"/>
+      <geometry>
+        <cylinder radius="0.0925" length="0.05"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="BL_link">
+    <material>Gazebo/Grey</material>
+    <mu1>2.0</mu1><mu2>2.0</mu2>
+  </gazebo>
+
+  <link name="BR_link">
+   <xacro:inertial_cylinder mass="1.43" length="0.05" radius="0.0925">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://my_robot_description/models/my_robot_description/meshes/BR_link.STL"/>
+      </geometry>
+      <material name=""><color rgba="0.79216 0.81961 0.93333 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0.03 0" rpy="${pi/2} 0 0"/>
+      <geometry>
+        <cylinder radius="0.0925" length="0.05"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="BR_link">
+    <material>Gazebo/Grey</material>
+    <mu1>2.0</mu1><mu2>2.0</mu2>
+  </gazebo>
+
+  <link name="FL_link">
+  <xacro:inertial_cylinder mass="1.43" length="0.05" radius="0.0925">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://my_robot_description/models/my_robot_description/meshes/FL_link.STL"/>
+      </geometry>
+      <material name=""><color rgba="0.79216 0.81961 0.93333 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.03 0" rpy="${pi/2} 0 0"/>
+      <geometry>
+        <cylinder radius="0.0925" length="0.05"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="FL_link">
+    <material>Gazebo/Grey</material>
+    <mu1>2.0</mu1><mu2>2.0</mu2>
+  </gazebo>
+
+  <link name="FR_link">
+   <xacro:inertial_cylinder mass="1.43" length="0.05" radius="0.0925">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://my_robot_description/models/my_robot_description/meshes/FR_link.STL"/>
+      </geometry>
+      <material name=""><color rgba="0.79216 0.81961 0.93333 1"/></material>
+    </visual>
+   <collision>
+      <origin xyz="0 0.03 0" rpy="${pi/2} 0 0"/>
+      <geometry>
+        <cylinder radius="0.0925" length="0.05"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="FR_link">
+    <material>Gazebo/Grey</material>
+    <mu1>2.0</mu1><mu2>2.0</mu2>
+  </gazebo>
+
+  <!-- HANDLE (also moved with the same offset) -->
+  <joint name="handle_middle_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="handle_middle"/>
+    <origin xyz="0.3355 0 0.43" rpy="0 0 0"/>
+  </joint>
+
+  <link name="handle_middle">
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry><cylinder length="0.5" radius="0.015"/></geometry>
+       <material name="">
+        <color rgba="0.75294 0.75294 0.75294 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0"/>
+      <geometry><cylinder length="0.5" radius="0.015"/></geometry>
+    </collision>
+    <xacro:inertial_cylinder mass="0.1" length="0.5" radius="0.015">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+  </link>
+  <gazebo reference="handle_middle"><material>Gazebo/DarkGrey</material></gazebo>
+
+  <joint name="handle_joint" type="fixed">
+    <parent link="handle_middle"/>
+    <child link="handle"/>
+    <origin xyz="0 0 0.25" rpy="${pi/2} 0 0"/>
+  </joint>
+
+  <link name="handle">
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry><cylinder length="0.4" radius="0.015"/></geometry>
+      <material name="">
+        <color rgba="0.75294 0.75294 0.75294 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0"/>
+      <geometry><cylinder length="0.4" radius="0.015"/></geometry>
+    </collision>
+    <xacro:inertial_cylinder mass="0.1" length="0.4" radius="0.015">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_cylinder>
+  </link>
+  <gazebo reference="handle"><material>Gazebo/DarkGrey</material></gazebo>
+
+  <!-- TRANSMISSIONS (unchanged) -->
+  <transmission name="left_front_wheel_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="FL_joint"><hardwareInterface>velocity</hardwareInterface></joint>
+    <actuator name="left_front_wheel_motor"><hardwareInterface>velocity</hardwareInterface><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+  <transmission name="left_back_wheel_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="BL_joint"><hardwareInterface>velocity</hardwareInterface></joint>
+    <actuator name="left_back_wheel_motor"><hardwareInterface>velocity</hardwareInterface><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+  <transmission name="right_front_wheel_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="FR_joint"><hardwareInterface>velocity</hardwareInterface></joint>
+    <actuator name="right_front_wheel_motor"><hardwareInterface>velocity</hardwareInterface><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+  <transmission name="right_back_wheel_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="BR_joint"><hardwareInterface>velocity</hardwareInterface></joint>
+    <actuator name="right_back_wheel_motor"><hardwareInterface>velocity</hardwareInterface><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+</robot>
