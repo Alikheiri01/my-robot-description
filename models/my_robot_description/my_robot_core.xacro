@@ -105,7 +105,11 @@
   </link>
   <gazebo reference="BL_link">
     <material>Gazebo/Grey</material>
-    <mu1>2.0</mu1><mu2>2.0</mu2>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
   </gazebo>
 
   <link name="BR_link">
@@ -128,7 +132,11 @@
   </link>
   <gazebo reference="BR_link">
     <material>Gazebo/Grey</material>
-    <mu1>2.0</mu1><mu2>2.0</mu2>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
   </gazebo>
 
   <link name="FL_link">
@@ -151,7 +159,11 @@
   </link>
   <gazebo reference="FL_link">
     <material>Gazebo/Grey</material>
-    <mu1>2.0</mu1><mu2>2.0</mu2>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
   </gazebo>
 
   <link name="FR_link">
@@ -174,7 +186,11 @@
   </link>
   <gazebo reference="FR_link">
     <material>Gazebo/Grey</material>
-    <mu1>2.0</mu1><mu2>2.0</mu2>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>10000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
   </gazebo>
 
   <!-- HANDLE (also moved with the same offset) -->
