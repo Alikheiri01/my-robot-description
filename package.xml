@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>my_robot_description</name>
-  <version>0.0.1</version>
+  <version>1.0.0</version>
   <description>SolidWorks exported robot description for ROS2</description>
 
   <maintainer email="you@example.com">Your Name</maintainer>
