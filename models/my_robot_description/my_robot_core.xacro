@@ -108,8 +108,8 @@
 <mu1>1.0</mu1> 
     <mu2>0.5</mu2> <fdir1>1 0 0</fdir1>
     
-    <kp>500000.0</kp> <kd>10.0</kd>     <minDepth>0.001</minDepth>
-    <maxVel>0.1</maxVel>
+    <kp>10000000.0</kp> <kd>100.0</kd>     <minDepth>0.001</minDepth>
+
   </gazebo>
 
   <link name="BR_link">
@@ -135,8 +135,8 @@
    <mu1>1.0</mu1> 
     <mu2>0.5</mu2> <fdir1>1 0 0</fdir1>
     
-    <kp>500000.0</kp> <kd>10.0</kd>     <minDepth>0.001</minDepth>
-    <maxVel>0.1</maxVel>
+    <kp>10000000.0</kp> <kd>100.0</kd>     <minDepth>0.001</minDepth>
+
   </gazebo>
 
   <link name="FL_link">
@@ -162,8 +162,8 @@
    <mu1>1.0</mu1> 
     <mu2>0.5</mu2> <fdir1>1 0 0</fdir1>
     
-    <kp>500000.0</kp> <kd>10.0</kd>     <minDepth>0.001</minDepth>
-    <maxVel>0.1</maxVel>
+    <kp>10000000.0</kp> <kd>100.0</kd>     <minDepth>0.001</minDepth>
+
   </gazebo>
 
   <link name="FR_link">
@@ -189,8 +189,8 @@
  <mu1>1.0</mu1> 
     <mu2>0.5</mu2> <fdir1>1 0 0</fdir1>
     
-    <kp>500000.0</kp> <kd>10.0</kd>     <minDepth>0.001</minDepth>
-    <maxVel>0.1</maxVel>
+    <kp>10000000.0</kp> <kd>100.0</kd>     <minDepth>0.001</minDepth>
+
     <minDepth>0.001</minDepth>
   </gazebo>
 
