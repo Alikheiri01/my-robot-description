@@ -67,18 +67,31 @@ def generate_launch_description():
             '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
             
             # Left RGB-D Camera
-            '/depth_cam/left/image@sensor_msgs/msg/Image@ignition.msgs.Image',
-            '/depth_cam/left/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image',
-            '/depth_cam/left/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo',
-            '/depth_cam/left/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked',
+            '/depth_cam/left/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/depth_cam/left/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/depth_cam/left/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+            '/depth_cam/left/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked',
             
             # Right RGB-D Camera
-            '/depth_cam/right/image@sensor_msgs/msg/Image@ignition.msgs.Image',
-            '/depth_cam/right/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image',
-            '/depth_cam/right/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo',
-            '/depth_cam/right/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked'
+            '/depth_cam/right/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/depth_cam/right/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/depth_cam/right/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+            '/depth_cam/right/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked'
         ],
         output='screen'
+    )
+
+    # 7. STATIC TRANSFORMS (Connects Gazebo internal camera frames to URDF optical frames)
+    left_camera_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['0', '0', '0', '0', '0', '0', 'my_robot/base_link/left_camera', 'left_camera_link_optical']
+    )
+
+    right_camera_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['0', '0', '0', '0', '0', '0', 'my_robot/base_link/right_camera', 'right_camera_link_optical']
     )
 
     return LaunchDescription([
@@ -87,4 +100,6 @@ def generate_launch_description():
         gazebo,
         spawn_entity,
         bridge,
+        left_camera_tf_node,
+        right_camera_tf_node,
     ])
