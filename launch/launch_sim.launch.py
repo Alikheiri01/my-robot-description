@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable # <--- NEW IMPORT
+from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable 
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import Command
@@ -11,9 +11,7 @@ def generate_launch_description():
     pkg_name = 'my_robot_description'
     pkg_share = get_package_share_directory(pkg_name)
 
-    # 1. SETUP GAZEBO RESOURCE PATH (The Fix)
-    # This tells Ignition where to find your meshes (package://my_robot_description/...)
-    # We point it to the parent directory of the package share (install/share)
+    # 1. SETUP GAZEBO RESOURCE PATH
     ros_gz_resource_path = AppendEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
         value=os.path.join(pkg_share, '..')
@@ -61,17 +59,30 @@ def generate_launch_description():
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
+            # Base kinematics and state
             '/cmd_vel@geometry_msgs/msg/Twist@ignition.msgs.Twist',
             '/odom@nav_msgs/msg/Odometry@ignition.msgs.Odometry',
             '/tf@tf2_msgs/msg/TFMessage@ignition.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState@ignition.msgs.Model',
-            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock'
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+            
+            # Left RGB-D Camera
+            '/depth_cam/left/image@sensor_msgs/msg/Image@ignition.msgs.Image',
+            '/depth_cam/left/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image',
+            '/depth_cam/left/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo',
+            '/depth_cam/left/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked',
+            
+            # Right RGB-D Camera
+            '/depth_cam/right/image@sensor_msgs/msg/Image@ignition.msgs.Image',
+            '/depth_cam/right/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image',
+            '/depth_cam/right/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo',
+            '/depth_cam/right/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked'
         ],
         output='screen'
     )
 
     return LaunchDescription([
-        ros_gz_resource_path, # <--- Don't forget to add this to the list!
+        ros_gz_resource_path,
         node_robot_state_publisher,
         gazebo,
         spawn_entity,
