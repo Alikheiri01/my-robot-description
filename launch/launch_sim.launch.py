@@ -3,7 +3,8 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable 
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node
+from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 from launch.substitutions import Command
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -85,13 +86,59 @@ def generate_launch_description():
     left_camera_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=['0', '0', '0', '0', '0', '0', 'my_robot/base_link/left_camera', 'left_camera_link_optical']
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '0', '--pitch', '0', '--yaw', '0',
+            '--frame-id', 'left_camera_link',
+            '--child-frame-id', 'my_robot/base_link/left_camera'
+        ]
     )
 
     right_camera_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=['0', '0', '0', '0', '0', '0', 'my_robot/base_link/right_camera', 'right_camera_link_optical']
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '0', '--pitch', '0', '--yaw', '0',
+            '--frame-id', 'right_camera_link',
+            '--child-frame-id', 'my_robot/base_link/right_camera'
+        ]
+    )
+
+    # 8. DEPTH -> POINTCLOUD CORRECTION (works around the gz-sensors rgbd_camera
+    #    native /points bug, where the point cloud payload is published in
+    #    Gazebo's raw +X-forward convention despite being labeled with the
+    #    optical frame_id. depth_image_proc reconstructs the cloud correctly
+    #    from depth_image + camera_info, which ARE correctly optical-labeled.
+    #    The original native /points topics above are left untouched.
+    depth_proc_container = ComposableNodeContainer(
+        name='depth_image_proc_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container',
+        composable_node_descriptions=[
+            ComposableNode(
+                package='depth_image_proc',
+                plugin='depth_image_proc::PointCloudXyzNode',
+                name='point_cloud_xyz_left',
+                remappings=[
+                    ('image_rect', '/depth_cam/left/depth_image'),
+                    ('camera_info', '/depth_cam/left/camera_info'),
+                    ('points', '/depth_cam/left/points_corrected'),
+                ]
+            ),
+            ComposableNode(
+                package='depth_image_proc',
+                plugin='depth_image_proc::PointCloudXyzNode',
+                name='point_cloud_xyz_right',
+                remappings=[
+                    ('image_rect', '/depth_cam/right/depth_image'),
+                    ('camera_info', '/depth_cam/right/camera_info'),
+                    ('points', '/depth_cam/right/points_corrected'),
+                ]
+            ),
+        ],
+        output='screen'
     )
 
     return LaunchDescription([
@@ -102,4 +149,5 @@ def generate_launch_description():
         bridge,
         left_camera_tf_node,
         right_camera_tf_node,
+        depth_proc_container,
     ])

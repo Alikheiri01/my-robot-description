@@ -1,0 +1,21 @@
+digraph G {
+"base_link" -> "BL_link"[label=" Broadcaster: default_authority\nAverage rate: 19.084\nBuffer length: 2.882\nMost recent transform: 64.686\nOldest transform: 61.804\n"];
+"odom" -> "base_link"[label=" Broadcaster: default_authority\nAverage rate: 24.221\nBuffer length: 2.89\nMost recent transform: 64.702\nOldest transform: 61.812\n"];
+"base_link" -> "BR_link"[label=" Broadcaster: default_authority\nAverage rate: 19.084\nBuffer length: 2.882\nMost recent transform: 64.686\nOldest transform: 61.804\n"];
+"base_link" -> "FL_link"[label=" Broadcaster: default_authority\nAverage rate: 19.084\nBuffer length: 2.882\nMost recent transform: 64.686\nOldest transform: 61.804\n"];
+"base_link" -> "FR_link"[label=" Broadcaster: default_authority\nAverage rate: 19.084\nBuffer length: 2.882\nMost recent transform: 64.686\nOldest transform: 61.804\n"];
+"right_camera_link" -> "my_robot/base_link/right_camera"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"depth_camera_back_link" -> "right_camera_link"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"left_camera_link" -> "my_robot/base_link/left_camera"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"depth_camera_back_link" -> "left_camera_link"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"base_link" -> "chassis"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"handle_middle" -> "depth_camera_back_link"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"base_link" -> "handle_middle"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"handle_middle" -> "handle"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"left_camera_link" -> "left_camera_link_optical"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"right_camera_link" -> "right_camera_link_optical"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1786282927.066072"[ shape=plaintext ] ;
+}->"odom";
+}
