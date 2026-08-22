@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable 
+from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -105,12 +105,23 @@ def generate_launch_description():
         ]
     )
 
-    # 8. DEPTH -> POINTCLOUD CORRECTION (works around the gz-sensors rgbd_camera
-    #    native /points bug, where the point cloud payload is published in
-    #    Gazebo's raw +X-forward convention despite being labeled with the
-    #    optical frame_id. depth_image_proc reconstructs the cloud correctly
-    #    from depth_image + camera_info, which ARE correctly optical-labeled.
-    #    The original native /points topics above are left untouched.
+    # 8. CAMERA_INFO FIXER
+    #    Works around a confirmed gz-sensors Fortress bug: the rgbd_camera
+    #    sensor correctly applies <lens><intrinsics> to CameraInfo's K matrix,
+    #    but computes the separate P (projection) matrix through a still-broken
+    #    default path. depth_image_proc uses P, not K, for its 3D reconstruction,
+    #    so this relay republishes corrected camera_info (both K and P) on new
+    #    "_fixed" topics. Update this path if camera_info_fixer.py lives elsewhere.
+    camera_info_fixer_process = ExecuteProcess(
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/codes/camera_info_fixer.py'],
+        output='screen'
+    )
+
+    # 9. DEPTH -> POINTCLOUD CORRECTION
+    #    Reconstructs the point cloud from depth_image + the corrected
+    #    camera_info (from step 8) rather than trusting Gazebo's native
+    #    /points topic, which has its own separate, unrelated axis bug.
+    #    The original native /points topics from the bridge are left untouched.
     depth_proc_container = ComposableNodeContainer(
         name='depth_image_proc_container',
         namespace='',
@@ -149,5 +160,6 @@ def generate_launch_description():
         bridge,
         left_camera_tf_node,
         right_camera_tf_node,
+        camera_info_fixer_process,
         depth_proc_container,
     ])
