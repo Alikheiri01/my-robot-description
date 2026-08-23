@@ -152,6 +152,16 @@ def generate_launch_description():
         output='screen'
     )
 
+    # 10. DEPTH CLOUD FUSION
+    #    Fuses left and right corrected point clouds into one in base_link,
+    #    with voxel downsampling to collapse the overlap region. Verified
+    #    against ground-truth cube geometry (see check_fused_cloud_accuracy.py).
+    #    Update this path if fuse_depth_clouds.py lives elsewhere.
+    depth_fusion_process = ExecuteProcess(
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/codes/fuse_depth_clouds.py'],
+        output='screen'
+    )
+
     return LaunchDescription([
         ros_gz_resource_path,
         node_robot_state_publisher,
@@ -162,4 +172,5 @@ def generate_launch_description():
         right_camera_tf_node,
         camera_info_fixer_process,
         depth_proc_container,
+        depth_fusion_process,
     ])
