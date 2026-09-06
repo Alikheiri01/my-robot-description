@@ -88,7 +88,42 @@ which closes small bin-runs bounded by two similar-range neighbors (same
 surface, sampling artifact) while leaving large/mismatched gaps alone (real
 edges, doorways, separate objects at different depths) -- see that function's
 docstring for the full reasoning and tuning knobs.
+
+EXCLUSION ZONES -- manual stand-in for the spec's actor-ID exclusion
+------------------------------------------------------------------
+Per the project spec's "Build now" list: "Exclusion of pedestrians/robot from
+the static channel (free via sim ground truth)." This wasn't implemented
+before because no dynamic actors existed yet to exclude -- but a physical
+stand-in object (e.g. a cylinder placed to mark a synthetic pedestrian pose
+for crop testing) exposes the same problem today: the depth camera has no way
+to know an object is "just a marker" and correctly reports it as a real
+obstacle, contaminating both the base grid and any crop resampled from it.
+
+Real per-actor-ID exclusion needs Hunav's ground-truth poses, which don't
+exist yet. Until then, this file accepts exclusion zones manually via CLI --
+same "hand-supplied ground truth standing in for a future automated source"
+pattern already used for the synthetic pedestrian pose in
+pedestrian_crop_view.py. Any obstacle point whose (x, y) falls inside a given
+world-frame circle is dropped before it can contribute to either the direct
+splat or the raycasting pass, so line-of-sight correctly passes through
+whatever used to be there.
+
+Usage (no change to the default no-argument invocation the launch file
+already uses -- exclusion zones are entirely opt-in):
+
+    python3 build_occupancy_grid.py \
+        --robot-pos X Y Z --robot-yaw YAW_RAD \
+        --exclude X Y Z RADIUS [--exclude X2 Y2 Z2 RADIUS2 ...]
+
+--robot-pos/--robot-yaw are WORLD frame, same Component Inspector values
+used everywhere else, and are only required if --exclude is given (needed to
+transform the exclusion center into base_link). Z components are accepted
+for CLI consistency but unused (2D top-down exclusion). Same snapshot
+caveat as pedestrian_crop_view.py: this transform happens once at startup,
+not via a live TF lookup -- if the robot moves after this script starts,
+restart it.
 """
+import argparse
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -253,6 +288,35 @@ def _fill_angular_gaps(obstacle_min_range: np.ndarray) -> np.ndarray:
     return filled
 
 
+def world_xy_to_base(x, y, robot_pos, robot_yaw):
+    """
+    Transforms a world-frame (x, y) into base_link -- same rotation
+    convention already used in check_occupancy_grid_accuracy.py and
+    pedestrian_crop_view.py. Only position matters for a circular exclusion
+    zone, so no yaw/heading component here.
+    """
+    c, s = np.cos(robot_yaw), np.sin(robot_yaw)
+    dx, dy = x - robot_pos[0], y - robot_pos[1]
+    return c * dx + s * dy, -s * dx + c * dy
+
+
+def filter_excluded_points(points_xy: np.ndarray, exclusion_zones):
+    """
+    Drops any point falling inside a given (base_x, base_y, radius) circle --
+    see the module docstring's "EXCLUSION ZONES" section. Called before
+    build_occupancy_grid() so excluded points never contribute to either the
+    direct splat or the raycasting pass; line-of-sight correctly passes
+    through whatever used to be there.
+    """
+    if not exclusion_zones or points_xy.shape[0] == 0:
+        return points_xy
+    mask = np.ones(points_xy.shape[0], dtype=bool)
+    for (zx, zy, zr) in exclusion_zones:
+        d = np.hypot(points_xy[:, 0] - zx, points_xy[:, 1] - zy)
+        mask &= (d > zr)
+    return points_xy[mask]
+
+
 def build_occupancy_grid(points_xy: np.ndarray):
     """
     points_xy: (M, 2) array of obstacle points' (x, y) in base_link -- already
@@ -343,16 +407,19 @@ def decode_channels(grid: np.ndarray):
 
 
 class OccupancyGridBuilder(Node):
-    def __init__(self):
+    def __init__(self, exclusion_zones=None):
         super().__init__('occupancy_grid_builder')
+        self.exclusion_zones = exclusion_zones or []
         self.pub = self.create_publisher(OccupancyGrid, '/occupancy_grid/base', 10)
         self.create_subscription(
             PointCloud2, '/depth_cam/fused/points', self.callback, qos_profile_sensor_data)
+        excl_msg = (f'{len(self.exclusion_zones)} exclusion zone(s) active (base_link): '
+                    f'{self.exclusion_zones}' if self.exclusion_zones else 'no exclusion zones active')
         self.get_logger().info(
             f'Occupancy grid builder started. Grid: {GRID_N}x{GRID_N} cells '
             f'@ {RESOLUTION:.2f} m/cell ({GRID_N * RESOLUTION:.1f} m x '
             f'{GRID_N * RESOLUTION:.1f} m), centered on base_link. '
-            f'FAR_CLIP={FAR_CLIP} m, HFOV={CAMERA_HFOV_DEG} deg.'
+            f'FAR_CLIP={FAR_CLIP} m, HFOV={CAMERA_HFOV_DEG} deg. {excl_msg}.'
         )
 
     def callback(self, msg: PointCloud2):
@@ -363,6 +430,8 @@ class OccupancyGridBuilder(Node):
             # Vectorized field extraction -- same idiom as fuse_depth_clouds.py's
             # transform_to_base(), not a per-point python loop.
             points_xy = np.column_stack([structured['x'], structured['y']]).astype(np.float64)
+
+        points_xy = filter_excluded_points(points_xy, self.exclusion_zones)
 
         grid, n_dropped = build_occupancy_grid(points_xy)
 
@@ -393,9 +462,32 @@ class OccupancyGridBuilder(Node):
         self.pub.publish(out)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--robot-pos', type=float, nargs=3, default=None, metavar=('X', 'Y', 'Z'),
+                         help='Robot position in WORLD frame. Required only if --exclude is given.')
+    parser.add_argument('--robot-yaw', type=float, default=None,
+                         help='Robot heading in WORLD frame, radians. Required only if --exclude is given.')
+    parser.add_argument('--exclude', type=float, nargs=4, action='append', default=None,
+                         metavar=('X', 'Y', 'Z', 'RADIUS'),
+                         help='WORLD-frame exclusion zone center (Z unused) + radius, in meters. '
+                              'Repeatable for multiple zones.')
+    args = parser.parse_args()
+    if args.exclude and (args.robot_pos is None or args.robot_yaw is None):
+        parser.error('--exclude requires --robot-pos and --robot-yaw to transform it into base_link')
+    return args
+
+
 def main():
+    args = parse_args()
+    exclusion_zones = []
+    if args.exclude:
+        for (x, y, z, radius) in args.exclude:
+            bx, by = world_xy_to_base(x, y, args.robot_pos, args.robot_yaw)
+            exclusion_zones.append((bx, by, radius))
+
     rclpy.init()
-    node = OccupancyGridBuilder()
+    node = OccupancyGridBuilder(exclusion_zones=exclusion_zones)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
