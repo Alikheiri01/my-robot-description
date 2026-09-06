@@ -53,7 +53,7 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 
 import build_occupancy_grid as bog
 from extract_pedestrian_crop import (
-    extract_pedestrian_crop, CROP_FORWARD, CROP_BEHIND, CROP_SIDE, CROP_ROWS, CROP_COLS)
+    extract_pedestrian_crop, CROP_FORWARD, CROP_BEHIND, CROP_SIDE, CROP_ROWS, CROP_COLS, CROP_RESOLUTION)
 
 # -1 unknown, 0 free, 100 occupied -> remapped to 0/1/2 purely for the colormap
 _CMAP = ListedColormap(['#b0b0b0', '#ffffff', '#1a1a1a'])  # unknown=grey, free=white, occupied=black
@@ -86,6 +86,9 @@ class PedestrianCropView(Node):
     def __init__(self, ped_x, ped_y, ped_heading, world_ped_pose, world_robot_pose):
         super().__init__('pedestrian_crop_view')
         self.ped_x, self.ped_y, self.ped_heading = ped_x, ped_y, ped_heading
+        self.world_ped_pose = world_ped_pose
+        self.world_robot_pose = world_robot_pose
+        self.pub = self.create_publisher(OccupancyGrid, '/occupancy_grid/pedestrian_crop', 10)
         self.create_subscription(OccupancyGrid, '/occupancy_grid/base', self.callback, 10)
 
         plt.ion()
@@ -132,9 +135,40 @@ class PedestrianCropView(Node):
             return
         base_grid = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
         crop = extract_pedestrian_crop(base_grid, self.ped_x, self.ped_y, self.ped_heading)
+
         self.im.set_data(to_display(crop))
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
+
+        self.publish_crop(crop, msg.header)
+
+    def publish_crop(self, crop: np.ndarray, header):
+        # NOTE: frame_id is repurposed to carry this run's exact pose values,
+        # not a registered TF frame -- this lets check_pedestrian_crop_accuracy.py
+        # detect a stale/mismatched viewer (e.g. still running with an old or
+        # mistyped pose) instead of silently comparing against the wrong
+        # scenario, which produces a confusing, misleading report with no
+        # error at all. See that script's docstring for why this matters.
+        out = OccupancyGrid()
+        out.header = header
+        out.header.frame_id = (
+            'pedestrian_local'
+            f';ped_world_x={self.world_ped_pose[0]:.6f}'
+            f';ped_world_y={self.world_ped_pose[1]:.6f}'
+            f';ped_world_yaw={self.world_ped_pose[2]:.6f}'
+            f';robot_world_x={self.world_robot_pose[0]:.6f}'
+            f';robot_world_y={self.world_robot_pose[1]:.6f}'
+            f';robot_world_yaw={self.world_robot_pose[2]:.6f}'
+        )
+        out.info.resolution = float(CROP_RESOLUTION)
+        out.info.width = CROP_COLS
+        out.info.height = CROP_ROWS
+        out.info.origin.position.x = -CROP_BEHIND
+        out.info.origin.position.y = -CROP_SIDE
+        out.info.origin.position.z = 0.0
+        out.info.origin.orientation.w = 1.0
+        out.data = crop.flatten(order='C').tolist()
+        self.pub.publish(out)
 
 
 def main():
