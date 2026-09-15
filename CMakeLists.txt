@@ -12,6 +12,7 @@ install(DIRECTORY
   worlds
   models
   rviz
+  hunav_assets
   DESTINATION share/${PROJECT_NAME}
 )
 

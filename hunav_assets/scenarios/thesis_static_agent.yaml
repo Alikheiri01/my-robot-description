@@ -8,13 +8,16 @@ hunav_loader:
       1:
         x: 1.4
         y: 1.4
+      2:
+        x: 3.0
+        y: 3.0
     agents:
       - agent1
     agent1:
       id: 1
       group_id: -1
       skin: 3
-      max_vel: 0.0
+      max_vel: 1.0
       radius: 0.4
       goal_radius: 0.3
       cyclic_goals: true
@@ -32,3 +35,4 @@ hunav_loader:
         other_force_factor: 20.0
       goals:
         - 1
+        - 2

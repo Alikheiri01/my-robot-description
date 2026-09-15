@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<sdf version="1.7">
+  <model name="pedestrian_standin">
+    <pose>1.4 1.4 0.8 0 0 -2.356</pose>
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+          <box><size>0.3 0.5 1.65</size></box>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <!-- Real human mesh (same asset the scenario's skin:3, regular_man,
+             would have used via HuNav's own actor pipeline), used here as
+             a plain MODEL visual instead of an SDF actor element; plain
+             models are immune to the confirmed upstream Ogre actor
+             rendering bug. No skeletal walking animation (that requires
+             an actor element), just a static pose moved via set_pose,
+             same mechanism as the box before.
+             CAVEAT: this mesh's own default forward facing direction has
+             not been visually confirmed against our yaw convention; if it
+             looks rotated 90 or 180 degrees from its direction of travel
+             once running, that is a one line yaw offset fix here, not a
+             new bug. -->
+        <geometry>
+          <mesh>
+            <uri>models/regular_man.dae</uri>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>
