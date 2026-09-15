@@ -1,27 +1,28 @@
 """
-Combined launch: HuNav generates a merged world (thesis_base.sdf + agents +
-HuNavPlugin) -> Gazebo launches on that generated world -> the thesis robot
-spawns into the SAME running instance -> the existing depth/occupancy
-pipeline (bridge, camera TF, camera_info_fixer, depth fusion) starts exactly
-as it already did in the original robot-only launch file.
+Combined launch, REVISED after confirming the Gazebo-actor pipeline
+(WorldGenerator -> HuNavSystemPluginIGN -> SDF <actor>) hits an upstream
+Ignition Gazebo rendering bug (Ogre::ItemIdentityException on actor
+double-registration once depth-camera sensors trigger a second render
+pass -- same bug class as gazebosim/gz-sim#1489). Confirmed via two
+independent experiments (shortening the spawn delay, switching render
+backends) that this is not fixable from our side without eliminating the
+second registration pass entirely.
 
-Nothing about the original robot-only launch file changes -- it still works
-standalone. This is a new, separate launch file for the combined scenario.
+NEW ARCHITECTURE: Gazebo never loads WorldGenerator's output or any SDF
+<actor> at all. It loads the stock empty.sdf (same as the original
+robot-only launch), with the robot AND a plain "pedestrian_standin" box
+model (immune to the actor bug -- plain models already proven to survive
+the same duplicate-registration condition that crashed actors) spawned
+into it normally. hunav_loader + hunav_gazebo_world_generator +
+hunav_agent_manager still run, headless, purely so a new bridge node
+(hunav_model_bridge.py) can use REAL Social Force Model computation
+(/get_agents once for initial state, /compute_agents every cycle) to move
+the plain model -- see that node's own docstring for the full design.
 
-TIMING NOTE (matches the same fragile-but-already-established pattern
-upstream's own simulation_fortress.launch.py uses -- fixed-delay TimerActions
-rather than a proper readiness check): the delays below are first guesses,
-not measured. If the robot fails to spawn or the bridge starts before Gazebo
-has finished loading the generated world, lengthen the relevant TimerAction
-period rather than assume something else is wrong -- start there before
-treating it as a new bug. HuNavSystemPluginIGN's own robot-lookup already
-retries every frame until the robot entity appears (confirmed from its
-source), so a robot spawned a bit late should still be found correctly;
-it's the *pipeline* nodes (bridge, camera TF, etc.) that have no such retry
-and need Gazebo to genuinely be up first.
-
-robot_name MUST match the actual -name given to spawn_entity below (my_robot)
--- HuNavSystemPluginIGN looks up the robot by this exact Gazebo model name.
+robot_name MUST still match spawn_entity's -name below, even though
+HuNavSystemPluginIGN never actually runs now -- hunav_gazebo_world_generator
+still declares/reads this parameter unconditionally in its own Configure(),
+even though its Gazebo-facing output is discarded.
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -43,7 +44,7 @@ def generate_launch_description():
     pkg_name = 'my_robot_description'
     pkg_share = get_package_share_directory(pkg_name)
 
-    # ---- Launch arguments -- our own sensible defaults, not the demo's ----
+    # ---- Launch arguments ----
     environment_name = LaunchConfiguration('environment_name')
     configuration_file = LaunchConfiguration('configuration_file')
     robot_name = LaunchConfiguration('robot_name')
@@ -55,32 +56,26 @@ def generate_launch_description():
     plugin_position = LaunchConfiguration('plugin_position')
 
     declare_args = [
-        DeclareLaunchArgument('environment_name', default_value='thesis_base',
-                               description='Base world file name (no .sdf), looked up in '
-                                            'hunav_gazebo_fortress_wrapper/worlds/ -- must be '
-                                            'symlinked there from my_robot_description/hunav_assets/worlds/'),
-        DeclareLaunchArgument('configuration_file', default_value='thesis_static_agent.yaml',
-                               description='Agent scenario YAML, looked up in '
-                                            'hunav_gazebo_fortress_wrapper/scenarios/ -- must be '
-                                            'symlinked there from my_robot_description/hunav_assets/scenarios/'),
+        # NOTE: environment_name is still required by hunav_gazebo_world_generator's
+        # own Configure() -- it still processes a base world file even though its
+        # OUTPUT (generatedWorld.sdf) is never loaded by Gazebo anymore. Reusing
+        # thesis_base.sdf here is harmless; nothing about Gazebo's own world
+        # depends on it.
+        DeclareLaunchArgument('environment_name', default_value='thesis_base'),
+        DeclareLaunchArgument('configuration_file', default_value='thesis_static_agent.yaml'),
         DeclareLaunchArgument('robot_name', default_value='my_robot',
                                description='MUST match the -name given to spawn_entity below'),
-        DeclareLaunchArgument('update_rate', default_value='30.0',
-                               description='HuNavPlugin update rate (Hz) -- 30.0 confirmed to fix '
-                                            'jitter/RTF instability seen at the upstream default of 1000.0'),
+        DeclareLaunchArgument('update_rate', default_value='30.0'),
         DeclareLaunchArgument('use_gazebo_obs', default_value='true'),
         DeclareLaunchArgument('global_frame_to_publish', default_value='map'),
         DeclareLaunchArgument('use_navgoal_to_start', default_value='false'),
-        DeclareLaunchArgument('ignore_models', default_value='ground_plane',
-                               description='Space-separated Gazebo model names agents should not '
-                                            'treat as obstacles -- ground_plane matches thesis_base.sdf; '
-                                            'add the robot\'s own link names here later if agents react '
-                                            'oddly to the robot\'s body via the generic obstacle path'),
+        DeclareLaunchArgument('ignore_models', default_value='ground_plane'),
         DeclareLaunchArgument('plugin_position', default_value='0'),
     ]
 
     # =========================================================================
-    # HuNav world generation + Gazebo (adapted from simulation_fortress.launch.py)
+    # HuNav headless pieces -- used ONLY for /get_agents and /compute_agents.
+    # world_generator's own Gazebo-world-generation output is never consumed.
     # =========================================================================
 
     world_file = PathJoinSubstitution([
@@ -90,19 +85,10 @@ def generate_launch_description():
     agent_conf_file = PathJoinSubstitution([
         FindPackageShare('hunav_gazebo_fortress_wrapper'), 'scenarios', configuration_file
     ])
-    generated_world = PathJoinSubstitution([
-        FindPackageShare('hunav_gazebo_fortress_wrapper'), 'worlds', 'generatedWorld.sdf'
-    ])
 
-    # NOTE: written using AppendEnvironmentVariable only (tolerates an unset
-    # variable) -- unlike simulation_fortress.launch.py's own env setup, which
-    # crashes outright if GZ_SIM_RESOURCE_PATH/GAZEBO_RESOURCE_PATH aren't
-    # already exported first. Fixed here since this is our own launch file;
-    # no "export ... ''" prerequisite needed before running this one.
     hunav_models_path = PathJoinSubstitution([FindPackageShare('hunav_gazebo_fortress_wrapper'), 'worlds'])
     set_env_gz_resources = AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', hunav_models_path)
     set_env_gazebo_resources = AppendEnvironmentVariable('GAZEBO_RESOURCE_PATH', hunav_models_path)
-    # Robot's own mesh/model resource path, from the original robot-only launch file
     robot_models_path = os.path.join(pkg_share, '..')
     set_env_robot_resources = AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', robot_models_path)
 
@@ -124,9 +110,6 @@ def generate_launch_description():
         package='hunav_agent_manager', executable='hunav_agent_manager',
         name='hunav_agent_manager', output='screen', parameters=[{'use_sim_time': True}],
     )
-    # Identity map->odom, matching HuNav's own default assumption -- same
-    # explicit upstream comment applies: remove this if/when the robot ever
-    # gets a real localization stack.
     static_tf_node = Node(
         package='tf2_ros', executable='static_transform_publisher', output='screen',
         arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
@@ -138,25 +121,19 @@ def generate_launch_description():
                   TimerAction(period=2.0, actions=[hunav_worldgen_node])],
     ))
 
-    gzserver_cmd = IncludeLaunchDescription(
+    # =========================================================================
+    # Gazebo -- stock empty.sdf, exactly like the original robot-only launch.
+    # No custom world, no WorldGenerator output, no SDF <actor> anywhere.
+    # =========================================================================
+
+    gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': ['-r -s -v4 ', generated_world], 'on_exit_shutdown': 'true'}.items(),
+        launch_arguments={'gz_args': '-r empty.sdf'}.items(),
     )
-    gzclient_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': '-g -v4'}.items(),
-    )
-    ordered_gazebo = RegisterEventHandler(OnProcessStart(
-        target_action=hunav_worldgen_node,
-        on_start=[LogInfo(msg='World generator started, launching Gazebo after 3s...'),
-                  TimerAction(period=3.0, actions=[gzserver_cmd, gzclient_cmd])],
-    ))
 
     # =========================================================================
-    # Robot + existing depth/occupancy pipeline (from the original robot-only
-    # launch file, unchanged, just re-timed to start after Gazebo is up)
+    # Robot + plain pedestrian stand-in + existing depth/occupancy pipeline
     # =========================================================================
 
     xacro_file = os.path.join(pkg_share, 'models', 'my_robot_description', 'my_robot.urdf.xacro')
@@ -171,6 +148,18 @@ def generate_launch_description():
                    '-x', '0.0', '-y', '0.0', '-z', '2.0', '-Y', '0.7854'],
         output='screen',
     )
+
+    # Plain box model, immune to the actor-rendering bug -- see
+    # hunav_assets/worlds/pedestrian_standin.sdf's own comments.
+    pedestrian_standin_sdf = os.path.join(
+        pkg_share, 'hunav_assets', 'worlds', 'pedestrian_standin.sdf')
+    spawn_pedestrian_standin = Node(
+        package='ros_gz_sim', executable='create',
+        arguments=['-file', pedestrian_standin_sdf, '-name', 'pedestrian_standin',
+                   '-x', '1.4', '-y', '1.4', '-z', '0.8', '-Y', '-2.356'],
+        output='screen',
+    )
+
     bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         arguments=[
@@ -200,8 +189,6 @@ def generate_launch_description():
         arguments=['--x', '0', '--y', '0', '--z', '0', '--roll', '0', '--pitch', '0', '--yaw', '0',
                    '--frame-id', 'right_camera_link', '--child-frame-id', 'my_robot/base_link/right_camera'],
     )
-    # Same hardcoded absolute paths as the original launch file -- unrelated
-    # pre-existing cleanup item, out of scope for this file.
     camera_info_fixer_process = ExecuteProcess(
         cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/codes/camera_info_fixer.py'],
         output='screen',
@@ -229,15 +216,23 @@ def generate_launch_description():
     )
 
     robot_and_pipeline_actions = [
-        node_robot_state_publisher, spawn_entity, bridge,
+        node_robot_state_publisher, spawn_entity, spawn_pedestrian_standin, bridge,
         left_camera_tf_node, right_camera_tf_node,
         camera_info_fixer_process, depth_proc_container, depth_fusion_process,
     ]
-    ordered_robot_spawn = RegisterEventHandler(OnProcessStart(
-        target_action=gzserver_cmd,
-        on_start=[LogInfo(msg='Gazebo started, spawning robot + pipeline after 5s...'),
-                  TimerAction(period=5.0, actions=robot_and_pipeline_actions)],
-    ))
+    # Gazebo (stock empty.sdf) starts fast with nothing to generate first --
+    # a couple of seconds is plenty, unlike the old chained-off-worldgen timing.
+    delayed_robot_spawn = TimerAction(period=3.0, actions=robot_and_pipeline_actions)
+
+    # Bridge node starts after the robot + stand-in model + HuNav headless
+    # pieces have all had a chance to come up -- needs /odom publishing,
+    # pedestrian_standin existing in Gazebo, and /get_agents + /compute_agents
+    # both servable.
+    hunav_model_bridge_process = ExecuteProcess(
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/codes/hunav_model_bridge.py'],
+        output='screen',
+    )
+    delayed_bridge_start = TimerAction(period=8.0, actions=[hunav_model_bridge_process])
 
     ld = LaunchDescription()
     for a in declare_args:
@@ -249,6 +244,7 @@ def generate_launch_description():
     ld.add_action(hunav_loader_node)
     ld.add_action(ordered_worldgen)
     ld.add_action(hunav_manager_node)
-    ld.add_action(ordered_gazebo)
-    ld.add_action(ordered_robot_spawn)
+    ld.add_action(gazebo)
+    ld.add_action(delayed_robot_spawn)
+    ld.add_action(delayed_bridge_start)
     return ld
