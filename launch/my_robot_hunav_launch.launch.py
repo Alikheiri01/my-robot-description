@@ -229,10 +229,19 @@ def generate_launch_description():
     # pedestrian_standin existing in Gazebo, and /get_agents + /compute_agents
     # both servable.
     hunav_model_bridge_process = ExecuteProcess(
-        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/codes/hunav_model_bridge.py'],
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/hunav_model_bridge.py'],
         output='screen',
     )
-    delayed_bridge_start = TimerAction(period=8.0, actions=[hunav_model_bridge_process])
+    # heading_smoother.py just subscribes to /people (published by the
+    # bridge above) -- no strict ordering needed between the two, ROS2
+    # subscriptions connect whenever both sides are up regardless of start
+    # order, so it's fine to start them together.
+    heading_smoother_process = ExecuteProcess(
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/heading_smoother.py'],
+        output='screen',
+    )
+    delayed_bridge_start = TimerAction(
+        period=8.0, actions=[hunav_model_bridge_process, heading_smoother_process])
 
     ld = LaunchDescription()
     for a in declare_args:
