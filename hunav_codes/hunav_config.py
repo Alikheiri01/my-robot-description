@@ -149,13 +149,35 @@ HEADING_SMOOTHING_WINDOW = 3
 MIN_SPEED_FOR_HEADING_UPDATE = 0.1
 
 # =============================================================================
-# Trajectory / crop dataset pairing (Phase D, dataset export -- not yet built)
+# Trajectory / crop dataset pairing (Phase D, dataset export)
 # =============================================================================
 # Matches common convention in pedestrian-trajectory-prediction literature
 # (Social-LSTM/Trajectron++-era work typically uses ~8 historical steps) --
 # a defensible starting point, not an arbitrary guess. At
 # BRIDGE_UPDATE_RATE_HZ=2.0 this is 4 seconds of history per sample.
 TRAJECTORY_HISTORY_LENGTH = 8
+
+# How many future steps the network is trained to predict, at the same
+# sample cadence as history (DATASET_SAMPLE_PERIOD_SEC below). 12 steps at
+# that cadence is 6 seconds -- deliberately longer than the 4s of history,
+# a common obs:predict ratio in the literature (e.g. Social-LSTM's 3.2s
+# observed / 4.8s predicted on ETH/UCY). Tune once real training starts.
+FUTURE_HORIZON_LENGTH = 12
+
+# Dataset samples are taken on a fixed timer, NOT per /occupancy_grid/base
+# message -- that topic publishes at camera rate, far faster than the
+# pedestrian actually moves (BRIDGE_UPDATE_RATE_HZ=2.0), so sampling on
+# every grid frame would just duplicate near-identical poses. Sampling at
+# the pedestrian's own update rate is what makes TRAJECTORY_HISTORY_LENGTH's
+# "4 seconds of history" comment above actually true.
+DATASET_SAMPLE_PERIOD_SEC = 1.0 / BRIDGE_UPDATE_RATE_HZ
+
+# A pose/grid older than this is treated as stale -- same margin reasoning
+# as pedestrian_crop_view_dynamic.py's own STALE_THRESHOLD_SEC (comfortably
+# above PAUSE_PHASE_FREEZE_SEC so an intentional bridge freeze isn't
+# mistaken for a dead feed). A stale reading resets the sample buffer
+# rather than silently splicing across the gap into a fake trajectory.
+DATASET_STALE_THRESHOLD_SEC = PAUSE_PHASE_FREEZE_SEC + 3.0
 
 # One .npz file per training sample (trajectory_history, crop, future_target,
 # timestamp, agent_id as named arrays) -- simplest format that loads

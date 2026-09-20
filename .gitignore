@@ -10,3 +10,4 @@ __pycache__/
 # IDE settings
 .vscode/
 .idea/
+dataset_codes/samples/
