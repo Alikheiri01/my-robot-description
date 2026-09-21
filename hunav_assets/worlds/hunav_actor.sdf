@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<sdf version="1.7">
+  <actor name="hunav_actor">
+    <pose>0 0 0 0 0 0</pose>
+    <skin>
+      <filename>/home/ali/ros2_ws/src/hunav_gazebo_fortress_wrapper/worlds/models/regular_man.dae</filename>
+      <scale>1</scale>
+    </skin>
+    <animation name="walk">
+      <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+      <scale>1.0</scale>
+      <interpolate_x>true</interpolate_x>
+    </animation>
+  </actor>
+</sdf>
