@@ -91,13 +91,13 @@ def world_to_odom(world_x: float, world_y: float, world_yaw: float):
 # Gazebo world / pedestrian stand-in model
 # =============================================================================
 WORLD_NAME = 'empty'
-MODEL_NAME = 'pedestrian_standin'
+MODEL_NAME = 'hunav_actor'
 
 # Height at which the pedestrian_standin model's root is placed -- matches
 # HuNavSystemPlugin_fortress.cpp's own updateGazeboPedestrians(), which sets
 # actorPose.Pos().Z(0.8) for this exact mesh family. Confirmed from source,
 # not guessed -- do not change without a reason grounded the same way.
-STANDIN_Z = 0.8
+STANDIN_Z = 0.0
 
 # =============================================================================
 # hunav_model_bridge.py
