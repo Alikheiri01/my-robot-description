@@ -11,5 +11,11 @@
       <scale>1.0</scale>
       <interpolate_x>true</interpolate_x>
     </animation>
+    <!-- Moves this actor to HuNav's poses, received on /model/hunav_actor/cmd_pose
+         (or via set_pose). Without it Gazebo never moves an actor from its spawn
+         point. See package hunav_actor_driver. -->
+    <plugin filename="HuNavActorDriver" name="hunav_actor_driver::HuNavActorDriver">
+      <motion_mode>interpolate</motion_mode>
+    </plugin>
   </actor>
 </sdf>
