@@ -97,7 +97,7 @@ MODEL_NAME = 'hunav_actor'
 # HuNavSystemPlugin_fortress.cpp's own updateGazeboPedestrians(), which sets
 # actorPose.Pos().Z(0.8) for this exact mesh family. Confirmed from source,
 # not guessed -- do not change without a reason grounded the same way.
-STANDIN_Z = 0.0
+STANDIN_Z = 0.8
 
 # =============================================================================
 # hunav_model_bridge.py
@@ -117,7 +117,7 @@ SET_POSE_TIMEOUT_MS = 300
 # is pipeline latency on a moving target, not a coordinate/orientation bug.
 # Set back to False once the experiment is done -- this is a debugging aid,
 # not a permanent behavior.
-PAUSE_PHASE_ENABLED = True
+PAUSE_PHASE_ENABLED = False
 PAUSE_PHASE_MOVE_SEC = 2.5    # how long the pedestrian walks before freezing
 PAUSE_PHASE_FREEZE_SEC = 4.0  # how long it holds still -- generous, to give
                                # RViz's slower depth pipeline time to fully
