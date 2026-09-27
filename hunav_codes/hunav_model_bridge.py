@@ -10,6 +10,14 @@ pass). Plain models have already been shown immune to that whole bug class
 in this project's own testing -- only <actor> elements throw; models just
 log a harmless duplicate-registration warning and survive.
 
+NOTE (2026-09-21): the my_robot_hunav_actor_launch.launch.py variant spawns
+a real animated SDF <actor> instead of a plain model, but ONLY after the
+robot's depth-camera sensors have already triggered their one-time render
+init -- avoiding the crash above by reordering rather than avoiding actors
+entirely. This node's logic is unchanged either way; it only points at a
+different MODEL_NAME (see hunav_config.py) and moves whichever entity that
+name refers to via the same set_pose mechanism.
+
 Reuses hunav_gazebo_world_generator PURELY for its /get_agents service
 (parses hunav_loader's YAML into a ready-made hunav_msgs/Agents message,
 so this node doesn't need its own YAML parser) -- its own
@@ -70,7 +78,7 @@ still-open issue in the depth-camera pipeline (degrades with range and at
 the edges of the FOV, per direct observation), deferred along with the
 rest of the camera/detection work. Left enabled as a general debugging
 aid; set PAUSE_PHASE_ENABLED = False in hunav_config.py once it's no
-longer needed.
+longer needed. (Set to False as of 2026-09-21 -- see hunav_config.py.)
 
 ROOT-CAUSE FIX -- duplicate /people publisher (orientation bug, RESOLVED):
 this node used to ALSO publish /people itself (people_msgs/People), on top
@@ -91,14 +99,49 @@ this is what caused the pedestrian orientation to be right in some frames
 and wrong in others with no visible pattern. Fix: this node no longer
 publishes /people at all; hunav_agent_manager's own copy is the single
 source of truth for it now.
+
+ROOT-CAUSE FIX -- overlapping /compute_agents calls (RESOLVED 2026-09-21):
+check_actor_motion.py's consistency logging (v2) caught a distinct bug on
+the animated-actor launch: periodic samples where position and heading
+were frozen at the previous value while velocity still read nonzero (a
+self-contradictory state), plus at least one pair of messages arriving at
+literally the same wall-clock instant with identical content. Root cause:
+_tick() fired unconditionally on a fixed timer (every 1/UPDATE_RATE_HZ
+seconds) with no check for whether the PREVIOUS /compute_agents call had
+already returned. If any single round-trip took longer than one tick
+period, a second request went out before the first resolved, both built
+from the same stale self.current_agents snapshot -- producing exactly the
+observed frozen/duplicate samples once both responses landed. Fixed by
+adding self._compute_agents_pending, checked at the top of _tick() and
+set/cleared around the async call -- see the guard below. This does not
+change the SFM/pose logic at all, only prevents overlapping requests.
+
+POSE DELIVERY MODES (2026-09-27) -- choose with --pose-mode:
+  set_pose (default): one `ign service .../set_pose` CLI subprocess per
+      cycle. Works for plain MODELS (the baseline pedestrian_standin launch),
+      where Gazebo's Physics applies the command. For an SDF ACTOR, Gazebo
+      NEVER applies set_pose on its own -- the HuNavActorDriver plugin
+      (package hunav_actor_driver, loaded inside hunav_actor.sdf) does. Each
+      subprocess also takes a large part of a 2 Hz cycle to land, which made
+      the actor lag /people by 0-1 step (measured |A-C| alternating 0/0.55 m).
+  topic: publish each pose as geometry_msgs/Pose on /model/<MODEL_NAME>/cmd_pose;
+      ros_gz_bridge forwards it to the same ign-transport topic, where
+      HuNavActorDriver picks it up within milliseconds. Actor launch only --
+      nothing listens on that topic for a plain model.
+--debug-raw logs every pose received from /compute_agents ([bridge-raw]).
 """
+import argparse
 import math
+import os
+import signal
 import subprocess
+import sys
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Pose
 from hunav_msgs.srv import GetAgents, ComputeAgents
 
 from hunav_config import (
@@ -122,8 +165,14 @@ def yaw_to_quaternion(yaw: float):
 
 
 class HunavModelBridge(Node):
-    def __init__(self):
+    def __init__(self, pose_mode='set_pose', debug_raw=False):
         super().__init__('hunav_model_bridge')
+        self.pose_mode = pose_mode
+        self.debug_raw = debug_raw
+        self.cmd_pose_pub = None
+        if self.pose_mode == 'topic':
+            self.cmd_pose_topic = f'/model/{MODEL_NAME}/cmd_pose'
+            self.cmd_pose_pub = self.create_publisher(Pose, self.cmd_pose_topic, 10)
 
         self.robot_pose = None  # (x, y, yaw), populated from /odom
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
@@ -136,6 +185,15 @@ class HunavModelBridge(Node):
 
         self.current_agents = None  # hunav_msgs/Agents, carried forward each cycle
         self.timer = None  # started only once initialize_agents() has succeeded
+
+        # Guards against overlapping /compute_agents calls -- without this,
+        # if a response ever takes longer than one tick period (1/UPDATE_RATE_HZ),
+        # the timer fires again before the prior request resolves, producing
+        # two in-flight requests built from the same stale current_agents
+        # snapshot. Confirmed as the cause of periodic frozen-but-nonzero-
+        # velocity samples and near-simultaneous duplicate /people messages,
+        # via check_actor_motion.py's consistency logging (2026-09-21).
+        self._compute_agents_pending = False
 
         # Diagnostic move/freeze duty cycle -- see module docstring.
         self.phase = 'move'
@@ -177,29 +235,72 @@ class HunavModelBridge(Node):
         self.get_logger().info(
             f'hunav_model_bridge running. Moving model "{MODEL_NAME}" in world '
             f'"{WORLD_NAME}" at {UPDATE_RATE_HZ} Hz via real hunav_agent_manager '
-            f'SFM computation, bypassing the Gazebo-actor pipeline entirely.'
+            f'SFM computation. Pose delivery: '
+            + (f'topic {self.cmd_pose_topic}' if self.pose_mode == 'topic'
+               else 'ign service set_pose (subprocess)')
         )
 
     def _set_model_pose(self, x: float, y: float, yaw: float):
         qx, qy, qz, qw = yaw_to_quaternion(yaw)
+        if self.pose_mode == 'topic':
+            msg = Pose()
+            msg.position.x = x
+            msg.position.y = y
+            msg.position.z = STANDIN_Z
+            msg.orientation.x = qx
+            msg.orientation.y = qy
+            msg.orientation.z = qz
+            msg.orientation.w = qw
+            self.cmd_pose_pub.publish(msg)
+            return
         req = (f'name: "{MODEL_NAME}" '
                f'position: {{x: {x:.4f}, y: {y:.4f}, z: {STANDIN_Z}}} '
                f'orientation: {{x: {qx:.6f}, y: {qy:.6f}, z: {qz:.6f}, w: {qw:.6f}}}')
+        cmd = ['ign', 'service', '-s', f'/world/{WORLD_NAME}/set_pose',
+               '--reqtype', 'ignition.msgs.Pose',
+               '--reptype', 'ignition.msgs.Boolean',
+               '--timeout', str(SET_POSE_TIMEOUT_MS),
+               '--req', req]
+        # NOTE: plain subprocess.run(..., timeout=2.0) does NOT reliably
+        # bound real wall-clock time here. On timeout, Python only kills the
+        # immediate child PID -- if `ign service` (ignition-transport CLI)
+        # leaves any descendant holding stdout/stderr open, communicate()
+        # keeps blocking past the requested timeout waiting for pipe EOF.
+        # Confirmed in this project: a single call froze the ENTIRE node
+        # (single-threaded executor -- this call blocks the timer too) for
+        # ~154s instead of the intended 2s, right around the same time
+        # Gazebo itself went away. Fix: run in its own process GROUP and
+        # kill the whole group on timeout, not just the one PID.
+        proc = None
         try:
-            result = subprocess.run(
-                ['ign', 'service', '-s', f'/world/{WORLD_NAME}/set_pose',
-                 '--reqtype', 'ignition.msgs.Pose',
-                 '--reptype', 'ignition.msgs.Boolean',
-                 '--timeout', str(SET_POSE_TIMEOUT_MS),
-                 '--req', req],
-                capture_output=True, text=True, timeout=2.0,
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
             )
-            if 'true' not in result.stdout:
+            try:
+                stdout, stderr = proc.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                try:
+                    stdout, stderr = proc.communicate(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    stdout, stderr = '', '(process group killed; pipes still would not drain)'
                 self.get_logger().warn(
-                    f'set_pose call did not report success: stdout={result.stdout!r} '
-                    f'stderr={result.stderr!r}', throttle_duration_sec=5.0)
-        except subprocess.TimeoutExpired:
-            self.get_logger().warn('set_pose call timed out', throttle_duration_sec=5.0)
+                    'set_pose call timed out -- process group killed. '
+                    f'stderr={stderr!r}', throttle_duration_sec=5.0)
+                return
+            if 'true' not in stdout:
+                self.get_logger().warn(
+                    f'set_pose call did not report success: stdout={stdout!r} '
+                    f'stderr={stderr!r}', throttle_duration_sec=5.0)
+        except Exception as e:
+            self.get_logger().warn(f'set_pose call raised {type(e).__name__}: {e}',
+                                    throttle_duration_sec=5.0)
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def _phase_elapsed_sec(self, now) -> float:
         return (now - self.phase_started_at).nanoseconds / 1e9
@@ -249,6 +350,12 @@ class HunavModelBridge(Node):
         if not self.compute_agents_client.service_is_ready():
             self.get_logger().warn('/compute_agents not ready, skipping cycle.', throttle_duration_sec=5.0)
             return
+        if self._compute_agents_pending:
+            self.get_logger().warn(
+                'Previous /compute_agents call has not returned yet -- '
+                'skipping this tick instead of overlapping requests.',
+                throttle_duration_sec=5.0)
+            return
 
         now = self.get_clock().now()
         if not self._update_phase(now):
@@ -271,10 +378,12 @@ class HunavModelBridge(Node):
         self.current_agents.header.stamp = self.get_clock().now().to_msg()
         req.current_agents = self.current_agents
 
+        self._compute_agents_pending = True
         future = self.compute_agents_client.call_async(req)
         future.add_done_callback(self._on_compute_agents_response)
 
     def _on_compute_agents_response(self, future):
+        self._compute_agents_pending = False
         result = future.result()
         if result is None:
             self.get_logger().warn('/compute_agents call failed.', throttle_duration_sec=5.0)
@@ -284,6 +393,35 @@ class HunavModelBridge(Node):
             return
         # Single-agent case for now -- move the one pedestrian stand-in.
         a = self.current_agents.agents[0]
+        # .warn (not .info) deliberately -- INFO is stdout and gets fully
+        # block-buffered once this process isn't attached to a TTY (i.e. as
+        # soon as you pipe through `tee`), so it can sit unflushed and never
+        # show up. WARN/ERROR go to stderr, which glibc leaves unbuffered.
+        #
+        # Also logs whatever velocity field(s) hunav_msgs/Agent actually
+        # carries (schema not confirmed here, so probe defensively instead
+        # of guessing a field name and crashing). This is to tell apart two
+        # very different explanations for a repeated position between two
+        # consecutive responses: a genuine near-zero SFM force (velocity
+        # ~0 too -- a real, if rare, stop) vs. an integration bug where a
+        # nonzero velocity was computed but never actually applied to the
+        # position that step (velocity NOT ~0 despite position not moving).
+        vel_bits = []
+        if hasattr(a, 'linear_vel'):
+            vel_bits.append(f'linear_vel={a.linear_vel:.4f}')
+        if hasattr(a, 'angular_vel'):
+            vel_bits.append(f'angular_vel={a.angular_vel:.4f}')
+        if hasattr(a, 'velocity'):
+            v = a.velocity
+            if hasattr(v, 'linear'):
+                vel_bits.append(f'velocity=({v.linear.x:.4f},{v.linear.y:.4f})')
+            else:
+                vel_bits.append(f'velocity={v}')
+        vel_str = (' ' + ' '.join(vel_bits)) if vel_bits else ' (no velocity field found on Agent)'
+        if self.debug_raw:
+            self.get_logger().warn(
+                f'[bridge-raw] pos=({a.position.position.x:.4f},{a.position.position.y:.4f}) '
+                f'yaw={a.yaw:.4f}{vel_str}')
         self._set_model_pose(a.position.position.x, a.position.position.y, a.yaw)
         # /people is published natively by hunav_agent_manager itself as a
         # side effect of the compute_agents call above -- no need (and no
@@ -294,8 +432,16 @@ def main():
     from hunav_config import ensure_single_instance
     ensure_single_instance('hunav_model_bridge')
 
+    parser = argparse.ArgumentParser(description='HuNav -> Gazebo pedestrian bridge')
+    parser.add_argument('--pose-mode', choices=['set_pose', 'topic'], default='set_pose',
+                        help='set_pose: ign service subprocess (plain models). '
+                             'topic: /model/<MODEL_NAME>/cmd_pose for HuNavActorDriver (actor).')
+    parser.add_argument('--debug-raw', action='store_true',
+                        help='log every pose received from /compute_agents')
+    args, _ = parser.parse_known_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
+
     rclpy.init()
-    node = HunavModelBridge()
+    node = HunavModelBridge(pose_mode=args.pose_mode, debug_raw=args.debug_raw)
     if not node.initialize_agents():
         node.get_logger().error('Failed to initialize agents from /get_agents. Exiting.')
         node.destroy_node()
@@ -308,7 +454,8 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():  # launch's SIGINT may already have shut the context down
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

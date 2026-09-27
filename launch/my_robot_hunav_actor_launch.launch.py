@@ -22,12 +22,17 @@ actor dynamically, after the robot's sensors are up and have rendered at
 least one frame, avoids it entirely -- verified by hand: no crash, the
 actor renders and animates normally alongside my_robot and its cameras.
 
-Also confirmed: real walking needs NO C++ plugin work. The actor's
-interpolate_x flag makes Gazebo tie walk-cycle playback to the actor's
-measured displacement, so the ordinary set_pose calls that
-hunav_model_bridge.py already makes produce genuine walking motion.
-That node is therefore UNCHANGED by this work -- it simply targets a
-different entity name, which it reads from hunav_config.py.
+CORRECTED 2026-09-26/27: the earlier claim here that "real walking needs
+NO C++ plugin work" was WRONG. Gazebo never applies set_pose to an actor --
+its real pose stayed at the spawn point, and the walking seen on screen was
+only the SDF animation looping by itself (it kept walking with the bridge
+killed). The actor is now driven by the HuNavActorDriver plugin (package
+hunav_actor_driver), loaded from inside hunav_actor.sdf. It receives each
+HuNav pose on /model/<ACTOR_NAME>/cmd_pose: hunav_model_bridge.py (run with
+--pose-mode topic) publishes it in ROS, and the ros_gz_bridge entry below
+forwards it to Gazebo within milliseconds -- replacing the old per-cycle
+`ign service set_pose` subprocess, which landed late enough to make the
+actor lag /people by up to one step.
 
 TIMING -- the one fragile part. Tune here if the Ogre crash ever returns.
     t=3s   robot, cameras and depth pipeline spawn
@@ -72,7 +77,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 ACTOR_NAME = 'hunav_actor'
 ACTOR_SPAWN_X = '1.4'
 ACTOR_SPAWN_Y = '1.4'
-ACTOR_SPAWN_Z = '0.0'
+ACTOR_SPAWN_Z = '0.8'
 ACTOR_SPAWN_YAW = '-2.356'
 
 T_ROBOT_SPAWN = 3.0
@@ -205,6 +210,8 @@ def generate_launch_description():
             '/depth_cam/right/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/depth_cam/right/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
             '/depth_cam/right/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked',
+            # ROS -> Gazebo only (']'): HuNav poses for the HuNavActorDriver plugin.
+            f'/model/{ACTOR_NAME}/cmd_pose@geometry_msgs/msg/Pose]ignition.msgs.Pose',
         ],
         output='screen',
     )
@@ -273,13 +280,15 @@ def generate_launch_description():
                  spawn_hunav_actor])
 
     # =========================================================================
-    # Bridge + heading smoother -- unchanged from the baseline launch.
+    # Bridge + heading smoother. The bridge runs with --pose-mode topic here
+    # (the baseline launch keeps the default set_pose mode for its plain model).
     # Starts last: needs /odom publishing, the actor present in Gazebo, and
     # /get_agents plus /compute_agents both servable.
     # =========================================================================
 
     hunav_model_bridge_process = ExecuteProcess(
-        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/hunav_model_bridge.py'],
+        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/hunav_model_bridge.py',
+             '--pose-mode', 'topic'],
         output='screen',
     )
     heading_smoother_process = ExecuteProcess(
