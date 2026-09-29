@@ -129,6 +129,19 @@ POSE DELIVERY MODES (2026-09-27) -- choose with --pose-mode:
       HuNavActorDriver picks it up within milliseconds. Actor launch only --
       nothing listens on that topic for a plain model.
 --debug-raw logs every pose received from /compute_agents ([bridge-raw]).
+
+CLOCK (2026-09-28): run with `--ros-args -p use_sim_time:=true` (the actor
+launch does). Then the 2 Hz timer AND every /compute_agents request stamp use
+Gazebo's simulation clock, so:
+  - HuNav integrates the pedestrian over SIM seconds. On wall time it moved
+    over real seconds while the world ran at ~0.32x real time (measured), so
+    in simulation time the pedestrian walked ~3x faster than max_vel.
+  - /people (stamped by hunav_agent_manager with our request stamp) and
+    /people_smoothed_pose carry SIM stamps -- the same clock as the depth
+    images/clouds/grids, so they can be matched by timestamp (latency_probe.py
+    showed /people on WALL and everything else on SIM before this).
+  - pausing Gazebo pauses HuNav too (no more catch-up jump on resume).
+The old wall-clock behaviour is still the default if use_sim_time is unset.
 """
 import argparse
 import math
@@ -235,7 +248,9 @@ class HunavModelBridge(Node):
         self.get_logger().info(
             f'hunav_model_bridge running. Moving model "{MODEL_NAME}" in world '
             f'"{WORLD_NAME}" at {UPDATE_RATE_HZ} Hz via real hunav_agent_manager '
-            f'SFM computation. Pose delivery: '
+            f'SFM computation, clock: '
+            + ('SIM (/clock)' if self.get_parameter('use_sim_time').value else 'WALL')
+            + '. Pose delivery: '
             + (f'topic {self.cmd_pose_topic}' if self.pose_mode == 'topic'
                else 'ign service set_pose (subprocess)')
         )
@@ -344,6 +359,12 @@ class HunavModelBridge(Node):
         return False
 
     def _tick(self):
+        if self.get_clock().now().nanoseconds == 0:
+            # use_sim_time is on but /clock has not arrived yet -- a zero stamp
+            # would give HuNav a meaningless first time step.
+            self.get_logger().warn('Waiting for /clock (use_sim_time is on).',
+                                   throttle_duration_sec=5.0)
+            return
         if self.robot_pose is None:
             self.get_logger().warn('No /odom received yet, skipping cycle.', throttle_duration_sec=5.0)
             return
