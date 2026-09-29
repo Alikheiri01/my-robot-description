@@ -132,6 +132,23 @@ PAUSE_PHASE_FREEZE_SEC = 4.0  # how long it holds still -- generous, to give
 PEDESTRIAN_EXCLUSION_RADIUS = 0.5
 
 # =============================================================================
+# Pedestrian pose lookup against depth data (grid builder, crop viewer, ...)
+# =============================================================================
+# Seconds ADDED to a depth message's timestamp before the pedestrian's pose
+# is looked up in the /people history (time_sync.StampedPoseHistory.at).
+# Measured 2026-09-29 with validate_time_alignment.py against the camera's own
+# points: the body the depth cameras see at stamp t is where /people put it at
+# about t - 0.26 s (clouds inside the /people range; the ~0.26 m median error
+# left without it matches 0.26 s at ~1 m/s walking speed).
+# Probable cause (not yet confirmed): the pose command's travel time from the
+# bridge through ros_gz_bridge to HuNavActorDriver. That delay is roughly
+# fixed in WALL time, so in SIM seconds it scales with the real-time factor
+# (measured at RTF ~0.32). If the RTF changes a lot, re-run
+# validate_time_alignment.py: its report prints the corrected value to put here.
+# The robot's own /odom lookup does NOT use this offset.
+POSE_LOOKUP_OFFSET_SEC = -0.26
+
+# =============================================================================
 # Heading smoothing (heading_smoother.py)
 # =============================================================================
 # Number of recent /people readings averaged together for the smoothed
