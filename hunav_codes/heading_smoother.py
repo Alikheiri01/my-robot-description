@@ -12,9 +12,24 @@ raw noise showing up as visible jitter/rotation in that downstream consumer.
 
 ALGORITHM -- moving-average with low-speed hold (matches the original MVP
 spec's own prescribed approach, not something invented fresh here):
+  0. (2026-09-29) The velocity fed to the window is the STEP velocity: the
+     change in /people position since the previous /people sample, divided by
+     the change in stamp. It is the direction the pedestrian actually walked
+     on the segment that ENDS at this sample -- the segment the depth cameras
+     see -- and does not depend on whether /people's own velocity field
+     describes the step before or after this position. /people's velocity
+     field is used only for the very first sample, when there is nothing to
+     difference yet.
+     Consequence for consumers: the yaw published with a position is the
+     heading of the segment that ENDS at it. Look it up with
+     time_sync.StampedPoseHistory.step_yaw_at(), not by blending yaws.
   1. Maintain a short rolling window of each tracked person's recent
-     (vx, vy) velocity readings (HEADING_SMOOTHING_WINDOW samples, from
-     hunav_config.py).
+     step velocities (HEADING_SMOOTHING_WINDOW samples, from
+     hunav_config.py). TURNAROUNDS: if a new step points more than
+     HEADING_REVERSAL_RESET_DEG away from the window's average, the window
+     is emptied first, so the heading flips at once. (Without this the
+     average of [v, v, -v] still pointed the OLD way for one more sample:
+     measured >120 deg wrong in 23% of walking samples.)
   2. AVERAGE THE VELOCITY VECTORS THEMSELVES, then take atan2 of the
      result -- not an average of raw angles. Averaging angles directly is
      wrong whenever a heading crosses the +-180 degree wraparound boundary
@@ -76,7 +91,9 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, Pose
 from people_msgs.msg import People
 
-from hunav_config import HEADING_SMOOTHING_WINDOW, MIN_SPEED_FOR_HEADING_UPDATE, world_to_odom
+from hunav_config import (
+    HEADING_SMOOTHING_WINDOW, MIN_SPEED_FOR_HEADING_UPDATE, HEADING_REVERSAL_RESET_DEG, world_to_odom)
+from time_sync import stamp_to_sec
 
 
 def yaw_to_quaternion(yaw: float):
@@ -89,11 +106,35 @@ class PersonHeadingTracker:
     """Per-agent rolling state -- one instance per tracked person name."""
 
     def __init__(self):
-        self.velocity_window = []  # list of (vx, vy), most recent last
+        self.velocity_window = []  # list of (vx, vy) step velocities, most recent last
         self.last_smoothed_yaw = None  # None until we have a first real reading
+        self.prev_sample = None  # (stamp_sec, x, y) of the previous /people sample
 
-    def update(self, vx: float, vy: float) -> float:
-        speed = math.hypot(vx, vy)
+    def update(self, t: float, x: float, y: float, vx: float, vy: float) -> float:
+        """
+        t, x, y: this /people sample's stamp (seconds) and world position.
+        vx, vy: its velocity field -- used only for the very first sample (and
+        the "just spawned" fallback), when there is no previous position.
+        Returns the smoothed yaw of the segment that ends at this sample.
+        """
+        prev = self.prev_sample
+        if prev is not None and t < prev[0] - 1.0:
+            # clock jumped back (simulation restarted): forget everything
+            self.velocity_window.clear()
+            self.last_smoothed_yaw = None
+            prev = None
+
+        if prev is None:
+            step_vx, step_vy = vx, vy
+        else:
+            dt = t - prev[0]
+            if dt <= 1e-6:
+                # the same instant published twice: nothing new to learn
+                return self.last_smoothed_yaw if self.last_smoothed_yaw is not None else math.atan2(vy, vx)
+            step_vx, step_vy = (x - prev[1]) / dt, (y - prev[2]) / dt
+        self.prev_sample = (t, x, y)
+
+        speed = math.hypot(step_vx, step_vy)
 
         if speed < MIN_SPEED_FOR_HEADING_UPDATE:
             if self.last_smoothed_yaw is None:
@@ -103,6 +144,16 @@ class PersonHeadingTracker:
                 return math.atan2(vy, vx)
             return self.last_smoothed_yaw
 
+        if self.velocity_window:
+            mean_vx = sum(v[0] for v in self.velocity_window) / len(self.velocity_window)
+            mean_vy = sum(v[1] for v in self.velocity_window) / len(self.velocity_window)
+            mean_speed = math.hypot(mean_vx, mean_vy)
+            if mean_speed > 1e-9:
+                cos_angle = (mean_vx * step_vx + mean_vy * step_vy) / (mean_speed * speed)
+                if cos_angle < math.cos(math.radians(HEADING_REVERSAL_RESET_DEG)):
+                    self.velocity_window.clear()  # turnaround: do not average across it
+
+        vx, vy = step_vx, step_vy
         self.velocity_window.append((vx, vy))
         if len(self.velocity_window) > HEADING_SMOOTHING_WINDOW:
             self.velocity_window.pop(0)
@@ -126,7 +177,8 @@ class HeadingSmoother(Node):
 
         self.get_logger().info(
             f'heading_smoother started. Window={HEADING_SMOOTHING_WINDOW} samples, '
-            f'low-speed hold below {MIN_SPEED_FOR_HEADING_UPDATE} m/s. '
+            f'low-speed hold below {MIN_SPEED_FOR_HEADING_UPDATE} m/s, window reset on '
+            f'turns over {HEADING_REVERSAL_RESET_DEG:.0f} deg, headings from position steps. '
             f'Publishing smoothed headings on /people_smoothed_pose.'
         )
 
@@ -151,7 +203,9 @@ class HeadingSmoother(Node):
                 self.trackers[person.name] = PersonHeadingTracker()
             tracker = self.trackers[person.name]
 
-            smoothed_yaw = tracker.update(person.velocity.x, person.velocity.y)
+            smoothed_yaw = tracker.update(
+                stamp_to_sec(msg.header.stamp), person.position.x, person.position.y,
+                person.velocity.x, person.velocity.y)
 
             # /people's position + smoothed_yaw are in true Gazebo WORLD
             # frame (see FRAME CONVERSION note above) -- convert into the

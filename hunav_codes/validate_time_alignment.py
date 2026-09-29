@@ -37,7 +37,8 @@ WHAT IT REPORTS
     body" shift k (always points toward the robot);
   - what share of the pedestrian's points the exclusion circle would miss;
   - how big the pedestrian really is (radius needed for the exclusion);
-  - how well the smoothed heading matches the instantaneous heading.
+  - how well the heading the crop would use matches the direction the body
+    really moves between consecutive clouds (old recorder / blended / current).
 
 USAGE (simulation running, pedestrian walking in view of the cameras)
     python3 validate_time_alignment.py
@@ -70,6 +71,10 @@ MAX_COND = 30.0         # regression needs walking in both directions
 MIN_USED = 15
 PASS_P90_M = 0.15       # about one grid cell (0.1 m) plus margin
 PASS_OFFSET_S = 0.10
+# heading check: consecutive-cloud pairs in which the pedestrian visibly walks
+PAIR_DT_MIN, PAIR_DT_MAX = 0.12, 0.70   # s between the two clouds of a pair
+HEADING_MIN_SPEED = 0.4                 # m/s of the camera centre
+PASS_HEADING_45 = 0.05                  # at most 5% of pairs more than 45 deg off
 
 
 def _seg_velocity(hist, t):
@@ -114,7 +119,7 @@ class AlignmentAnalyzer:
         self.records = []
         self.rejects = collections.Counter()
         self.n_clouds = 0
-        self.heading_err = []         # (abs error deg, speed)
+        self.yaw_hist = StampedPoseHistory(max_age_sec=1e9)   # smoothed heading, WORLD frame, by /people stamp
 
     # --- events ------------------------------------------------------------
     def on_odom(self, t, x, y, yaw):
@@ -126,12 +131,8 @@ class AlignmentAnalyzer:
         self.last_vel = (vx, vy)
 
     def on_smoothed(self, t, yaw_odom_frame):
-        v = self.vel.get(round(t, 3))
-        if v is None or math.hypot(*v) < 0.3:
-            return
-        raw = math.atan2(v[1], v[0])
-        smooth_world = yaw_odom_frame + self.spawn_yaw
-        self.heading_err.append((abs(math.degrees(wrap_angle(smooth_world - raw))), math.hypot(*v)))
+        """/people_smoothed_pose heading (odom frame) with the /people stamp."""
+        self.yaw_hist.add(t, 0.0, 0.0, wrap_angle(yaw_odom_frame + self.spawn_yaw))
 
     def on_cloud(self, t_c, pts_b):
         """pts_b: Nx2 obstacle points in base_link (ground already removed)."""
@@ -190,13 +191,63 @@ class AlignmentAnalyzer:
             return
 
         body = d <= BODY_R
-        rec = {'t': t_c, 'tl': t_l, 'c': ctr, 'robot': np.array([rx, ry]), 'hold': hold, 'n': int(body.sum()),
+        latest_yaw = self.yaw_hist.latest()
+        rec = {'t': t_c, 'tl': t_l, 'c': ctr, 'yaw_latest': latest_yaw[2] if latest_yaw else None, 'robot': np.array([rx, ry]), 'hold': hold, 'n': int(body.sum()),
                'extent90': _pct(d[body], 90), 'extent_max': float(d[body].max())}
         for key, p in (('A', pA), ('B', pB), ('C', pC)):
             rec['p' + key] = p
             dist = np.hypot(xw[body] - p[0], yw[body] - p[1])
             rec['left' + key] = float(np.mean(dist > self.excl_r))
         self.records.append(rec)
+
+    # --- heading vs the direction the body REALLY moves ----------------------
+    def _heading_report(self, L):
+        """
+        Compares the heading each lookup would give against the direction the
+        pedestrian's camera centre moved between two consecutive clouds. That is
+        independent of how /people's velocity field is defined. Returns the
+        share of pairs more than 45 deg off for the current method (or None).
+        """
+        w = L.append
+        recs = self.records
+        pairs = []
+        for a, b in zip(recs[:-1], recs[1:]):
+            dt = b['t'] - a['t']
+            if not (PAIR_DT_MIN <= dt <= PAIR_DT_MAX):
+                continue
+            d = b['c'] - a['c']
+            pairs.append((a, b, dt, math.hypot(d[0], d[1]) / dt, math.atan2(d[1], d[0])))
+        speeds = [p[3] for p in pairs if p[3] >= HEADING_MIN_SPEED]
+        if len(speeds) < 15:
+            w('\nHEADING: too few walking cloud pairs to check the heading.')
+            return None
+        # a pair straddling a turnaround moves much less than one on a straight walk
+        min_speed = max(HEADING_MIN_SPEED, 0.6 * float(np.median(speeds)))
+        errs = {'latest': [], 'blend': [], 'step': []}
+        for a, b, dt, sp, th in pairs:
+            if sp < min_speed:
+                continue
+            t_mid = 0.5 * (a['t'] + b['t']) + self.lookup_offset
+            step = self.yaw_hist.step_yaw_at(t_mid, max_hold=HOLD_MAX)
+            blend = self.yaw_hist.at(t_mid, max_hold=HOLD_MAX)
+            latest = b['yaw_latest']
+            if step is None or blend is None or latest is None:
+                continue
+            for key, yaw in (('latest', latest), ('blend', blend[2]), ('step', step)):
+                errs[key].append(abs(math.degrees(wrap_angle(yaw - th))))
+        n = len(errs['step'])
+        if n < 15:
+            w('\nHEADING: too few cloud pairs with a heading sample to check it.')
+            return None
+        w(f'\nHEADING vs the direction the body really moves (camera centre, {n} consecutive-cloud pairs while walking)')
+        w(f'  {"heading used":{58}s} {"median":>7s} {"> 45 deg":>9s} {">120 deg":>9s}')
+        names = [('latest', 'latest smoothed heading (old dataset-recorder behaviour)'),
+                 ('blend', 'blended between samples at the lookup time (previous crop viewer)'),
+                 ('step', 'heading of the segment at the lookup time (current crop viewer)')]
+        for key, name in names:
+            e = np.array(errs[key])
+            w(f'  {name:58s} {np.median(e):6.0f}° {100 * np.mean(e > 45):8.0f}% {100 * np.mean(e > 120):8.0f}%')
+        return float(np.mean(np.array(errs['step']) > 45))
 
     # --- report ------------------------------------------------------------
     def report(self):
@@ -285,14 +336,7 @@ class AlignmentAnalyzer:
           f'{_pct(ext, 90):.2f} + {k_ref:.2f} + {min(best["B"][0], best["C"][0]):.2f} = '
           f'{_pct(ext, 90) + k_ref + min(best["B"][0], best["C"][0]):.2f} m   (configured: {self.excl_r:.2f} m)')
 
-        if self.heading_err:
-            he = np.array([h[0] for h in self.heading_err])
-            w(f'\nHEADING: smoothed heading vs instantaneous heading in the same /people message '
-              f'({len(he)} samples while walking)')
-            w(f'  median error {np.median(he):.0f} deg,  more than 45 deg off: {100 * np.mean(he > 45):.0f}%,  '
-              f'more than 120 deg off: {100 * np.mean(he > 120):.0f}%')
-            w('  (large errors right after each turnaround = the 3-sample smoothing still averaging '
-              'the old direction)')
+        heading = self._heading_report(L)
 
         w('\nVERDICT')
         p90_b, p90_c = best['B'][0], best['C'][0]
@@ -333,6 +377,13 @@ class AlignmentAnalyzer:
         else:
             w(f'  EXCLUSION: only {100 * share:.0f}% of clouds leave >15% of the pedestrian\'s points '
               f'-- radius {self.excl_r:.2f} m is adequate.')
+        if heading is not None:
+            if heading <= PASS_HEADING_45:
+                w(f'  HEADING: PASS -- the crop\'s heading is within 45 deg of the real walking direction in '
+                  f'{100 * (1 - heading):.0f}% of cloud pairs.')
+            else:
+                w(f'  HEADING: NOT YET -- {100 * heading:.0f}% of cloud pairs are more than 45 deg off the '
+                  f'real walking direction (limit {100 * PASS_HEADING_45:.0f}%).')
         w('=' * 100)
         return '\n'.join(L), {'best': best, 'k': k_ref, 'used': used}
 
