@@ -55,6 +55,22 @@ diagnostic (which freezes the PEDESTRIAN's motion at the source) -- this
 one freezes the VIEW, works regardless of whether the sim itself is
 freezing anything, and costs nothing to leave on permanently.
 
+TIME ALIGNMENT (2026-09-28)
+------------------------------------------------------------------
+The crop is cut with the pedestrian's position AND smoothed heading and the
+robot's pose all looked up at the base grid's OWN timestamp (time_sync.py),
+not the latest ones. latency_probe.py measured the grid ~0.2-0.4 s (sim)
+older than /people_smoothed_pose, and this viewer's own backlog added more
+(crop up to ~0.8 s old): the crop was cut at the pedestrian's CURRENT
+position/heading from an OLDER scene. The grid subscription now keeps only
+the newest message, so a slow redraw skips frames instead of queueing them.
+The title shows how far the grid lags the latest pose.
+
+LOOKUP OFFSET (2026-09-29): validate_time_alignment.py showed the body in a
+depth-derived grid sits where the pedestrian was ~0.26 s BEFORE the grid's
+stamp, so the pedestrian lookup uses grid stamp + POSE_LOOKUP_OFFSET_SEC
+(hunav_config.py). The robot's /odom lookup does not.
+
 STALENESS
 ------------------------------------------------------------------
 If /people_smoothed_pose hasn't delivered anything recently, the crop is
@@ -86,7 +102,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scene codes'))
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy, HistoryPolicy
 from nav_msgs.msg import OccupancyGrid, Odometry
 from geometry_msgs.msg import PoseArray
 import matplotlib.pyplot as plt
@@ -95,7 +111,18 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 import build_occupancy_grid as bog
 from extract_pedestrian_crop import (
     extract_pedestrian_crop, CROP_FORWARD, CROP_BEHIND, CROP_SIDE, CROP_ROWS, CROP_COLS, CROP_RESOLUTION)
-from hunav_config import yaw_from_quaternion, PAUSE_PHASE_FREEZE_SEC
+from hunav_config import yaw_from_quaternion, PAUSE_PHASE_FREEZE_SEC, POSE_LOOKUP_OFFSET_SEC
+from time_sync import StampedPoseHistory, stamp_to_sec, clocks_match
+
+# Max hold past either end of a pose history (see time_sync.py). /odom is
+# dense; /people_smoothed_pose arrives once per HuNav step (0.5 s sim).
+ODOM_MAX_HOLD_SEC = 0.2
+PED_MAX_HOLD_SEC = 0.6
+
+# Newest-only: if drawing is slower than the grid rate, skip frames rather
+# than working through a queue of ever-older ones.
+LATEST_ONLY_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                             history=HistoryPolicy.KEEP_LAST, depth=1)
 
 # Comfortably above PAUSE_PHASE_FREEZE_SEC so the bridge's own intentional
 # freeze diagnostic is never mistaken for a dead /people_smoothed_pose feed.
@@ -134,14 +161,16 @@ class PedestrianCropViewLive(Node):
     def __init__(self):
         super().__init__('pedestrian_crop_view_dynamic')
 
-        self.robot_pose = None       # (x, y, yaw) in odom frame, from /odom
-        self.ped_pose = None         # (x, y, yaw) in odom frame, from /people_smoothed_pose
+        self.robot_pose = None       # (x, y, yaw) in odom frame, latest from /odom
+        self.ped_pose = None         # (x, y, yaw) in odom frame, latest from /people_smoothed_pose
+        self.odom_hist = StampedPoseHistory()
+        self.ped_hist = StampedPoseHistory()
         self.ped_last_seen = None    # time.monotonic() of the last non-empty PoseArray
         self.paused = False
 
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
         self.create_subscription(PoseArray, '/people_smoothed_pose', self._ped_cb, 10)
-        self.create_subscription(OccupancyGrid, '/occupancy_grid/base', self._grid_cb, 10)
+        self.create_subscription(OccupancyGrid, '/occupancy_grid/base', self._grid_cb, LATEST_ONLY_QOS)
         self.pub = self.create_publisher(OccupancyGrid, '/occupancy_grid/pedestrian_crop', 10)
 
         plt.ion()
@@ -188,6 +217,7 @@ class PedestrianCropViewLive(Node):
         p = msg.pose.pose.position
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
         self.robot_pose = (p.x, p.y, yaw)
+        self.odom_hist.add(stamp_to_sec(msg.header.stamp), *self.robot_pose)
 
     def _ped_cb(self, msg: PoseArray):
         if not msg.poses:
@@ -199,6 +229,7 @@ class PedestrianCropViewLive(Node):
         yaw = 2.0 * math.atan2(qz, qw)  # pure-yaw quaternion -> angle, exact inverse of yaw_to_quaternion()
         self.ped_pose = (pose.position.x, pose.position.y, yaw)
         self.ped_last_seen = time.monotonic()
+        self.ped_hist.add(stamp_to_sec(msg.header.stamp), *self.ped_pose)
 
     def _grid_cb(self, msg: OccupancyGrid):
         if self.paused:
@@ -222,18 +253,34 @@ class PedestrianCropViewLive(Node):
                 f'expected {bog.GRID_N}x{bog.GRID_N} -- skipping this frame.')
             return
 
+        # Look up robot and pedestrian AT the grid's own timestamp.
+        t_grid = stamp_to_sec(msg.header.stamp)
+        robot = self.odom_hist.at(t_grid, max_hold=ODOM_MAX_HOLD_SEC) or self.robot_pose
+        # The body in the grid is where the pedestrian was POSE_LOOKUP_OFFSET_SEC
+        # (negative) relative to the grid stamp -- measured, see hunav_config.py.
+        ped = self.ped_hist.at(t_grid + POSE_LOOKUP_OFFSET_SEC, max_hold=PED_MAX_HOLD_SEC)
+        if ped is None:
+            latest_t = self.ped_hist.latest_time()
+            if latest_t is not None and not clocks_match(t_grid, latest_t):
+                self._show_placeholder(
+                    'Grid and pedestrian stamps are on DIFFERENT clocks -- run '
+                    'hunav_model_bridge.py with use_sim_time:=true')
+            else:
+                self._show_placeholder(f'No pedestrian pose near grid time {t_grid:.2f}')
+            return
+        lag = self.ped_hist.latest_time() - t_grid
+
         base_grid = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
 
         ped_x, ped_y, ped_heading = world_pose_to_base_link(
-            self.ped_pose[0], self.ped_pose[1], self.ped_pose[2],
-            self.robot_pose, self.robot_pose[2])
+            ped[0], ped[1], ped[2], robot, robot[2])
 
         crop = extract_pedestrian_crop(base_grid, ped_x, ped_y, ped_heading)
 
         self.im.set_data(to_display(crop))
         self.title.set_text(
-            f'ped (odom): x={self.ped_pose[0]:.2f} y={self.ped_pose[1]:.2f} '
-            f'yaw={np.degrees(self.ped_pose[2]):.1f}deg\n'
+            f'ped @ grid time (odom): x={ped[0]:.2f} y={ped[1]:.2f} '
+            f'yaw={np.degrees(ped[2]):.1f}deg   [grid {lag:.2f}s sim behind latest pose]\n'
             f'ped (base_link): x={ped_x:.2f}  y={ped_y:.2f}  heading={np.degrees(ped_heading):.1f} deg'
         )
         self.fig.canvas.draw_idle()

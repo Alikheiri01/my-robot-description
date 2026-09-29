@@ -288,7 +288,10 @@ def generate_launch_description():
 
     hunav_model_bridge_process = ExecuteProcess(
         cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/hunav_model_bridge.py',
-             '--pose-mode', 'topic'],
+             '--pose-mode', 'topic',
+             # Step HuNav on Gazebo's clock, so /people shares the depth data's
+             # clock and the pedestrian's speed is right in simulation time.
+             '--ros-args', '-p', 'use_sim_time:=true'],
         output='screen',
     )
     heading_smoother_process = ExecuteProcess(
