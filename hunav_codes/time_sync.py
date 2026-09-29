@@ -130,6 +130,27 @@ class StampedPoseHistory:
         yaw = wrap_angle(self.yaw[i - 1] + a * wrap_angle(self.yaw[i] - self.yaw[i - 1]))
         return x, y, yaw
 
+    def step_yaw_at(self, t: float, max_hold: float = 0.0):
+        """
+        Yaw of the straight segment that contains time t, or None if t is
+        outside the history by more than max_hold: the yaw stored with the
+        first sample stamped at or after t. This relies on the convention that
+        a sample's yaw is the direction of the segment that ENDS at that sample
+        (heading_smoother.py publishes it that way).
+
+        NOT blended between samples, unlike at(): the pedestrian faces one way
+        for a whole straight segment, and blending yaws across a reversal would
+        sweep the crop through every angle in between while the body walks
+        straight.
+        """
+        if not self.t:
+            return None
+        if t <= self.t[0]:
+            return self.yaw[0] if self.t[0] - t <= max_hold else None
+        if t > self.t[-1]:
+            return self.yaw[-1] if t - self.t[-1] <= max_hold else None
+        return self.yaw[bisect.bisect_left(self.t, t)]
+
     def max_gap(self, t_start: float, t_end: float) -> float:
         """Largest spacing between consecutive samples covering [t_start, t_end]
         (inf if the history does not cover it) -- to detect dropouts."""
@@ -151,6 +172,12 @@ def _self_test():
     assert abs(abs(math.degrees(yaw)) - 180.0) < 1e-6, math.degrees(yaw)  # shortest arc, not 0
     assert h.at(9.9) is None and h.at(9.9, max_hold=0.2) == (0.0, 0.0, math.radians(170))
     assert h.at(10.6) is None and h.at(10.6, max_hold=0.2)[0] == 1.0
+    # step lookup: the yaw of the sample that ENDS the segment containing t, no blending
+    assert abs(h.step_yaw_at(10.25) - math.radians(-170)) < 1e-12
+    assert abs(h.step_yaw_at(10.5) - math.radians(-170)) < 1e-12   # arrival instant: segment just ended
+    assert abs(h.step_yaw_at(10.0) - math.radians(170)) < 1e-12
+    assert h.step_yaw_at(9.9) is None and abs(h.step_yaw_at(9.9, 0.2) - math.radians(170)) < 1e-12
+    assert h.step_yaw_at(10.6) is None and abs(h.step_yaw_at(10.6, 0.2) - math.radians(-170)) < 1e-12
     h.add(10.4, 9.0, 9.0)            # out of order: ignored
     assert h.at(10.45)[0] < 1.0
     for k in range(1, 40):

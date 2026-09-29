@@ -165,6 +165,14 @@ HEADING_SMOOTHING_WINDOW = 3
 # 1.0 m/s; 0.1 m/s is roughly 10% of that.
 MIN_SPEED_FOR_HEADING_UPDATE = 0.1
 
+# When a new step points more than this many degrees away from the current
+# averaging window (a turnaround at a goal), the window is emptied so the
+# heading flips immediately instead of being dragged by the old direction for
+# HEADING_SMOOTHING_WINDOW-1 more samples. Measured 2026-09-29: without it the
+# smoothed heading was >120 deg wrong in 23% of walking samples (one wrong
+# sample after every reversal). Gentler turns are still smoothed.
+HEADING_REVERSAL_RESET_DEG = 90.0
+
 # =============================================================================
 # Trajectory / crop dataset pairing (Phase D, dataset export)
 # =============================================================================

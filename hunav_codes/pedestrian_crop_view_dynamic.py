@@ -71,6 +71,12 @@ depth-derived grid sits where the pedestrian was ~0.26 s BEFORE the grid's
 stamp, so the pedestrian lookup uses grid stamp + POSE_LOOKUP_OFFSET_SEC
 (hunav_config.py). The robot's /odom lookup does not.
 
+HEADING LOOKUP (2026-09-29): the pedestrian's heading is NOT interpolated
+between samples but taken as the yaw of the straight segment containing the
+lookup time (heading_smoother.py publishes each yaw as the heading of the
+segment ENDING at that position). Interpolating would rotate the crop through
+all angles between old and new direction during every turnaround segment.
+
 STALENESS
 ------------------------------------------------------------------
 If /people_smoothed_pose hasn't delivered anything recently, the crop is
@@ -268,6 +274,14 @@ class PedestrianCropViewLive(Node):
             else:
                 self._show_placeholder(f'No pedestrian pose near grid time {t_grid:.2f}')
             return
+        # Position is interpolated, HEADING is not: the body walks a straight
+        # segment facing one way, so use the yaw of the segment that contains
+        # the lookup time (time_sync.step_yaw_at). Blending yaws would sweep
+        # the crop through every angle between the two directions at each
+        # turnaround.
+        seg_yaw = self.ped_hist.step_yaw_at(t_grid + POSE_LOOKUP_OFFSET_SEC, max_hold=PED_MAX_HOLD_SEC)
+        if seg_yaw is not None:
+            ped = (ped[0], ped[1], seg_yaw)
         lag = self.ped_hist.latest_time() - t_grid
 
         base_grid = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
