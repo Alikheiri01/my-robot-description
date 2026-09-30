@@ -55,6 +55,13 @@ ANCHOR_ZERO_TOL = 1e-4
 # Comfortably above the teleop tool's own MAX_LINEAR_SPEED=2.0 m/s.
 MAX_REASONABLE_SPEED_MPS = 3.5
 
+# Time-aligned samples (schema 'time_aligned_v2'): row times must be exactly one
+# sample period apart; poses inside a window must not have a dropout longer than
+# dataset_recorder.MAX_POSE_GAP_SEC; consecutive anchors are ~one period apart.
+TIME_TOL_SEC = 1e-4
+MAX_POSE_GAP_SEC = 0.8 + 1e-6
+ANCHOR_BREAK_SEC = 1.0
+
 
 def validate_sample(data) -> list:
     """Returns a list of human-readable issue strings; empty means clean."""
@@ -104,6 +111,27 @@ def validate_sample(data) -> list:
                     f'{name} has a {worst:.2f}m step (> {max_step:.2f}m implied by '
                     f'{MAX_REASONABLE_SPEED_MPS} m/s heuristic) -- possible frame/continuity bug')
 
+    # --- time metadata written by the time-aligned recorder (2026-09-30) --------
+    if 'history_times' in data and period:
+        ht, ft = data['history_times'], data['future_times']
+        if ht.shape != (EXPECTED_HISTORY_SHAPE[0],) or ft.shape != (EXPECTED_FUTURE_SHAPE[0],):
+            issues.append(f'history_times/future_times shapes {ht.shape}/{ft.shape} do not match the sample')
+        else:
+            steps = np.diff(np.concatenate([ht, ft]))
+            if np.abs(steps - period).max() > TIME_TOL_SEC:
+                issues.append(f'history/future rows are not {period:.2f} s apart in simulation time '
+                              f'(spacings {steps.min():.3f}..{steps.max():.3f} s)')
+            anchor_t = float(data['anchor_time_sim'])
+            if abs(ht[-1] - anchor_t) > TIME_TOL_SEC:
+                issues.append(f'last history time {ht[-1]:.3f} != anchor_time_sim {anchor_t:.3f}')
+            expected_anchor = float(data['grid_stamp_sim']) + float(data['lookup_offset_sec'])
+            if abs(expected_anchor - anchor_t) > TIME_TOL_SEC:
+                issues.append(f'anchor_time_sim {anchor_t:.3f} != grid_stamp_sim + lookup_offset_sec '
+                              f'({expected_anchor:.3f})')
+            if float(data['max_pose_gap_sec']) > MAX_POSE_GAP_SEC:
+                issues.append(f'pose gap {float(data["max_pose_gap_sec"]):.2f} s inside the window '
+                              f'(limit {MAX_POSE_GAP_SEC} s)')
+
     return issues
 
 
@@ -116,11 +144,18 @@ def scan(samples_dir: Path):
     all_step_dists = []
     n_clean = 0
     failures = []
+    n_old_format = 0
+    runs = {}   # run id -> [(sample index, anchor time)] for the sequence check
 
     for f in files:
         try:
             with np.load(f, allow_pickle=True) as data:
                 issues = validate_sample(data)
+                if 'anchor_time_sim' in data:
+                    parts = f.stem.split('_')   # sample_<date>_<time>_<index>
+                    runs.setdefault('_'.join(parts[1:-1]), []).append((int(parts[-1]), float(data['anchor_time_sim'])))
+                else:
+                    n_old_format += 1
                 if 'trajectory_history' in data and 'future_target' in data:
                     combined = np.concatenate([data['trajectory_history'][:, :2], data['future_target'][:, :2]])
                     if len(combined) > 1:
@@ -136,6 +171,21 @@ def scan(samples_dir: Path):
     print(f'Scanned {len(files)} samples in {samples_dir}')
     print(f'  clean: {n_clean}')
     print(f'  with issues: {len(failures)}')
+    if n_old_format:
+        print(f'  NOTE: {n_old_format} sample(s) are from the old wall-clock recorder (no time metadata; '
+              f'their rows are NOT a fixed number of simulation seconds apart) -- keep them out of a '
+              f'training set, e.g. move them to another folder.')
+    for run_id, items in sorted(runs.items()):
+        items.sort()
+        gaps = np.diff([t for _, t in items])
+        line = f'  run {run_id}: {len(items)} time-aligned samples'
+        if len(gaps):
+            line += (f'; anchor spacing median {np.median(gaps):.2f} s, min {gaps.min():.2f} s, '
+                     f'max {gaps.max():.2f} s; breaks (> {ANCHOR_BREAK_SEC:.0f} s): '
+                     f'{int(np.sum(gaps > ANCHOR_BREAK_SEC))}; not increasing: {int(np.sum(gaps <= 0))}')
+        print(line)
+        if len(gaps) and (gaps <= 0).any():
+            print('    !! anchor times are not strictly increasing within this run -- time bug')
     if all_step_dists:
         arr = np.array(all_step_dists)
         print(
@@ -187,6 +237,11 @@ def view(samples_dir: Path, start_index: int = 0):
             crop = data['crop']
             history = data['trajectory_history']
             future = data['future_target']
+            time_info = ''
+            if 'anchor_time_sim' in data:
+                time_info = (f'  anchor t={float(data["anchor_time_sim"]):.2f}s (sim)  '
+                             f'grid t={float(data["grid_stamp_sim"]):.2f}s  '
+                             f'window {float(data["history_times"][0]):.1f}..{float(data["future_times"][-1]):.1f}s')
 
         im = ax.imshow(
             _to_display(crop), cmap=cmap, norm=norm, origin='lower',
@@ -207,7 +262,7 @@ def view(samples_dir: Path, start_index: int = 0):
         status = 'CLEAN' if not issues else f'{len(issues)} ISSUE(S)'
         color = 'green' if not issues else 'red'
         ax.set_title(
-            f'[{state["idx"] + 1}/{len(files)}] {f.name}  --  {status}\n'
+            f'[{state["idx"] + 1}/{len(files)}] {f.name}  --  {status}{time_info}\n'
             f'n=next  p=prev  r=random  q=quit', fontsize=9, color=color)
 
         print(f'\n{f.name}: {"clean" if not issues else issues}')
