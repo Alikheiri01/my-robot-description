@@ -121,6 +121,11 @@ ODOM_MAX_HOLD_SEC = 0.2
 LATTICE_RESTART_SEC = 10.0
 POSE_HISTORY_KEEP_SEC = 40.0
 MAX_PENDING = 100
+# Two samples whose anchors are closer than this are near-duplicates (same scene,
+# same poses). The grid nearest to a lattice time is used, so when grids arrive
+# unevenly two consecutive targets can pick grids only ~0.1 s apart (seen: 0.03-0.07 s).
+# Such a candidate is skipped and counted instead. 0.3 s = 60% of the sample period.
+MIN_ANCHOR_SPACING_SEC = 0.3
 
 
 def world_pose_to_base_link(x, y, yaw, robot_pos, robot_yaw):
@@ -164,6 +169,7 @@ class AlignedSampler:
         self.prev = None           # (t_g, T, loader) of the previous grid
         self.next_target = None    # next lattice time (in anchor time T)
         self.last_used_tg = None
+        self.last_anchor_T = None
         self.drops = Counter()
         self.n_saved = 0
         self.n_anchors = 0
@@ -208,6 +214,8 @@ class AlignedSampler:
                 self.drops['no grid near the sample time'] += 1
             elif best[0] == self.last_used_tg:
                 self.drops['grid already used (grids sparser than the sample period)'] += 1
+            elif self.last_anchor_T is not None and 0 <= best[1] - self.last_anchor_T < MIN_ANCHOR_SPACING_SEC:
+                self.drops['too close to the previous anchor (uneven grids)'] += 1
             else:
                 self._start_anchor(best)
             self.next_target += self.P
@@ -221,6 +229,7 @@ class AlignedSampler:
         self.prev = None
         self.next_target = None
         self.last_used_tg = None
+        self.last_anchor_T = None
 
     def _start_anchor(self, cand):
         t_g, T, loader = cand
@@ -233,6 +242,7 @@ class AlignedSampler:
             self.drops['pending queue overflow'] += 1
         self.pending.append({'T': T, 't_g': t_g, 'grid': loader(), 'robot': robot, 'crop': None})
         self.last_used_tg = t_g
+        self.last_anchor_T = T
         self.n_anchors += 1
 
     def _advance(self):

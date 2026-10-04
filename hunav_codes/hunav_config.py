@@ -129,7 +129,7 @@ PAUSE_PHASE_FREEZE_SEC = 4.0  # how long it holds still -- generous, to give
 # Matches (with a small safety margin) thesis_static_agent.yaml's agent
 # radius (0.4m). NOTE: still a separate hand-set value, not read from the
 # YAML directly -- update by hand if that scenario's radius ever changes.
-PEDESTRIAN_EXCLUSION_RADIUS = 0.5
+PEDESTRIAN_EXCLUSION_RADIUS = 0.65
 
 # =============================================================================
 # Pedestrian pose lookup against depth data (grid builder, crop viewer, ...)
