@@ -20,8 +20,12 @@ pose streams:
 Now everything is keyed by SIMULATION timestamps:
 
   * ANCHOR TIME. For a depth-derived grid stamped t_g, the pedestrian the
-    cameras see is where /people put them at  T = t_g + POSE_LOOKUP_OFFSET_SEC
-    (hunav_config.py, -0.26 s, measured against the camera's own points). The
+    cameras see is where the pose stream put them at  T = t_g + POSE_LOOKUP_OFFSET_SEC.
+    (2026-10-01: that stream is now the plugin's APPLIED pose, stamped with the
+    simulation time of the step the actor was moved in, relayed by
+    applied_pose_relay.py as /people_smoothed_pose, so the offset is 0.0. Until
+    then it was HuNav's /people, the command, with a measured offset of -0.10 ..
+    -0.29 s that changed between sessions. Samples carry lookup_offset_sec.) The
     sample's anchor is that T, and its crop is cut from THAT grid at the
     pedestrian pose at T, with the heading of the segment containing T
     (time_sync.StampedPoseHistory.step_yaw_at).

@@ -137,9 +137,13 @@ def main():
 
     print('\nREADING (a rule of thumb, not a proof)')
     if p_ahead >= 0.85 and share_mv >= 2 * max(share_sl, 0.02):
-        print('  Almost always AHEAD of the anchor and mostly while walking: the body sits ahead of the pose used for the\n'
-              '  exclusion circle. That points to TIMING with POSE_LOOKUP_OFFSET_SEC too large in size for this session.\n'
-              '  Run validate_time_alignment.py; it prints the offset to use. Do NOT just enlarge the radius.')
+        need = max(0.5, float(np.percentile(dist, 90)) + 0.05)
+        print('  Almost always AHEAD of the anchor and mostly while walking. Two causes look the same here:\n'
+              '   (a) TIMING: the exclusion circle is centred behind the body. Decide with validate_time_alignment.py:\n'
+              '       if its timing offset is beyond +-0.1 s, fix the timing first and do NOT enlarge the radius.\n'
+              '   (b) REACH: the leading foot/arm of a walker sticks out ahead of the circle. If the validator passes\n'
+              '       (offset within +-0.1 s), this is it: raise PEDESTRIAN_EXCLUSION_RADIUS in hunav_config.py\n'
+              f'       (about {need:.2f} m would have covered 90% of these cells), then record again and re-run this.')
     elif p_ahead <= 0.15 and share_mv >= 2 * max(share_sl, 0.02):
         print('  Almost always BEHIND the anchor and mostly while walking: the exclusion circle is ahead of the body.\n'
               '  That points to TIMING with POSE_LOOKUP_OFFSET_SEC too small in size for this session.\n'

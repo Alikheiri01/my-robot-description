@@ -135,18 +135,27 @@ PEDESTRIAN_EXCLUSION_RADIUS = 0.5
 # Pedestrian pose lookup against depth data (grid builder, crop viewer, ...)
 # =============================================================================
 # Seconds ADDED to a depth message's timestamp before the pedestrian's pose
-# is looked up in the /people history (time_sync.StampedPoseHistory.at).
-# Measured 2026-09-29 with validate_time_alignment.py against the camera's own
-# points: the body the depth cameras see at stamp t is where /people put it at
-# about t - 0.26 s (clouds inside the /people range; the ~0.26 m median error
-# left without it matches 0.26 s at ~1 m/s walking speed).
-# Probable cause (not yet confirmed): the pose command's travel time from the
-# bridge through ros_gz_bridge to HuNavActorDriver. That delay is roughly
-# fixed in WALL time, so in SIM seconds it scales with the real-time factor
-# (measured at RTF ~0.32). If the RTF changes a lot, re-run
-# validate_time_alignment.py: its report prints the corrected value to put here.
+# is looked up in the pose history (time_sync.StampedPoseHistory.at).
+#
+# HISTORY (2026-10-01): the pose history used to be HuNav's /people, i.e. the
+# COMMANDED pose, which reaches the rendered actor only after a delay. A lookup
+# offset compensated for that delay, but validate_time_alignment.py measured
+# it at -0.10, -0.24, -0.29 and -0.06 s in four sessions, so no constant was
+# reliable. The pose history is now the plugin's APPLIED pose
+# (applied_pose_relay.py, stamped with the simulation time of the step the
+# actor was moved in -- the same instant the cameras render), so the correct
+# value is 0.0. Keep it as a knob only: if validate_time_alignment.py reports
+# a steady residual with the applied pose, put its suggestion here.
 # The robot's own /odom lookup does NOT use this offset.
-POSE_LOOKUP_OFFSET_SEC = -0.26
+POSE_LOOKUP_OFFSET_SEC = 0.0
+
+# Where the actor plugin publishes the pose it applied (ign-transport topic;
+# the launch file bridges it to ROS under the same name as a PoseArray) and
+# how far back applied_pose_relay.py looks to get the direction of motion.
+# The window is short on purpose: the applied path is exact (no noise), and a
+# long window would smear a 180 degree reversal.
+APPLIED_POSE_TOPIC = f'/model/{MODEL_NAME}/applied_pose'
+APPLIED_HEADING_WINDOW_SEC = 0.10
 
 # =============================================================================
 # Heading smoothing (heading_smoother.py)
