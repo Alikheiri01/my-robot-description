@@ -34,6 +34,12 @@ forwards it to Gazebo within milliseconds -- replacing the old per-cycle
 `ign service set_pose` subprocess, which landed late enough to make the
 actor lag /people by up to one step.
 
+APPLIED POSE (2026-10-01): the plugin also publishes the pose it actually applied on
+/model/<ACTOR_NAME>/applied_pose (30 Hz, header stamp = simulation time). The second
+bridge entry below brings it to ROS; run applied_pose_relay.py (INSTEAD of
+heading_smoother.py) to turn it into /people_smoothed_pose. Everything that has to line
+up with the depth camera then uses the pedestrian's real pose at the camera's own stamp.
+
 TIMING -- the one fragile part. Tune here if the Ogre crash ever returns.
     t=3s   robot, cameras and depth pipeline spawn
     t=6s   pedestrian actor spawns (MUST be after sensors have rendered)
@@ -212,6 +218,10 @@ def generate_launch_description():
             '/depth_cam/right/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked',
             # ROS -> Gazebo only (']'): HuNav poses for the HuNavActorDriver plugin.
             f'/model/{ACTOR_NAME}/cmd_pose@geometry_msgs/msg/Pose]ignition.msgs.Pose',
+            # Gazebo -> ROS ('['): the pose the plugin really applied, stamped with the
+            # simulation time of the step it was applied in. applied_pose_relay.py turns
+            # it into /people_smoothed_pose (replaces heading_smoother.py).
+            f'/model/{ACTOR_NAME}/applied_pose@geometry_msgs/msg/PoseArray[ignition.msgs.Pose_V',
         ],
         output='screen',
     )

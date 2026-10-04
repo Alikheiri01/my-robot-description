@@ -70,6 +70,10 @@ LOOKUP OFFSET (2026-09-29): validate_time_alignment.py showed the body in a
 depth-derived grid sits where the pedestrian was ~0.26 s BEFORE the grid's
 stamp, so the pedestrian lookup uses grid stamp + POSE_LOOKUP_OFFSET_SEC
 (hunav_config.py). The robot's /odom lookup does not.
+(2026-10-01: /people_smoothed_pose now comes from the plugin's APPLIED pose via
+applied_pose_relay.py, stamped with the simulation time of the step the actor
+was moved in; the offset is therefore 0.0. The -0.26 s above was the lag of
+HuNav's command, which varied between sessions.)
 
 HEADING LOOKUP (2026-09-29): the pedestrian's heading is NOT interpolated
 between samples but taken as the yaw of the straight segment containing the
