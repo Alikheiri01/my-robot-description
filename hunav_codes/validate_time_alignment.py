@@ -15,6 +15,14 @@ script
   3. compares it with what each lookup method predicts for the cloud's own
      timestamp, and reports the error in metres.
 
+POSE SOURCE (2026-10-01): by default the pedestrian pose is the plugin's
+APPLIED pose (applied_pose_relay.py -> /people_smoothed_pose, ~30 Hz, stamped
+with the simulation time of the step the actor was moved in). Run it with
+`--source people` to measure the old way (HuNav's /people, the command) for
+comparison. In the text below "/people" means "the pose stream under test".
+With the applied pose the expected timing offset is ~0 and
+POSE_LOOKUP_OFFSET_SEC should be 0.0: any steady residual is reported.
+
 METHODS COMPARED (all use only data that was available when the cloud arrived)
   A  latest /people pose               -- the OLD behaviour
   B  /people interpolated at the cloud's stamp + POSE_LOOKUP_OFFSET_SEC
@@ -64,7 +72,7 @@ ISOLATION_MAX = 0.35    # ring points / body points above this -> not isolated, 
 MIN_POINTS, MAX_POINTS = 25, 2500
 MS_ITERS = 8
 MS_CONVERGED = 0.02     # m
-HOLD_MAX = 0.6          # s, same as the consumers under test
+HOLD_MAX = 0.6          # s, default: the consumers' hold with /people (0.2 s with the applied pose)
 EXTRAP_MAX = 0.6        # s
 MIN_SPEED_FOR_FIT = 0.2  # m/s; a standing pedestrian says nothing about timing
 MAX_COND = 30.0         # regression needs walking in both directions
@@ -108,8 +116,10 @@ def _pct(a, q):
 class AlignmentAnalyzer:
     """Pure logic (no ROS): feed events in ARRIVAL order, then call report()."""
 
-    def __init__(self, exclusion_radius, spawn_yaw=0.0, lookup_offset=0.0):
+    def __init__(self, exclusion_radius, spawn_yaw=0.0, lookup_offset=0.0, source_label='/people', hold_max=None):
         self.excl_r = exclusion_radius
+        self.src = source_label     # name of the pose stream under test, for the report
+        self.hold_max = HOLD_MAX if hold_max is None else hold_max   # how long the consumers hold the newest pose
         self.spawn_yaw = spawn_yaw
         self.lookup_offset = lookup_offset   # POSE_LOOKUP_OFFSET_SEC the nodes under test apply (B and C)
         self.odom = StampedPoseHistory(max_age_sec=1e9)
@@ -149,7 +159,7 @@ class AlignmentAnalyzer:
             self.rejects['CLOCK MISMATCH cloud vs /people'] += 1
             return
         t_l = t_c + self.lookup_offset      # the time the nodes under test look the pedestrian up at
-        pB_full = self.ppl.at(t_l, max_hold=HOLD_MAX)
+        pB_full = self.ppl.at(t_l, max_hold=self.hold_max)
         if pB_full is None:
             self.rejects['no /people pose near cloud time'] += 1
             return
@@ -228,7 +238,7 @@ class AlignmentAnalyzer:
             if sp < min_speed:
                 continue
             t_mid = 0.5 * (a['t'] + b['t']) + self.lookup_offset
-            step = self.yaw_hist.step_yaw_at(t_mid, max_hold=HOLD_MAX)
+            step = self.yaw_hist.step_yaw_at(t_mid, max_hold=self.hold_max)
             blend = self.yaw_hist.at(t_mid, max_hold=HOLD_MAX)
             latest = b['yaw_latest']
             if step is None or blend is None or latest is None:
@@ -256,12 +266,12 @@ class AlignmentAnalyzer:
         w('=' * 100)
         w('TIME-ALIGNMENT VALIDATION')
         used = len(self.records)
-        w(f'Clouds received: {self.n_clouds}    used: {used}    /people samples: {len(self.ppl)}')
+        w(f'Clouds received: {self.n_clouds}    used: {used}    pose samples ({self.src}): {len(self.ppl)}')
         for reason, cnt in self.rejects.most_common():
             w(f'   skipped {cnt:4d}: {reason}')
         if self.rejects.get('CLOCK MISMATCH cloud vs /people'):
-            w('\n  !! Cloud stamps and /people stamps are on different clocks. Run '
-              'hunav_model_bridge.py with use_sim_time:=true.')
+            w(f'\n  !! Cloud stamps and {self.src} stamps are on different clocks. Run the bridge and '
+              f'the relay with use_sim_time:=true.')
         if used < MIN_USED:
             w(f'\nToo few usable clouds ({used} < {MIN_USED}) for statistics. Keep the pedestrian '
               f'in the cameras\' view, remove nearby objects and run longer.')
@@ -301,7 +311,7 @@ class AlignmentAnalyzer:
         w('\nPOSITION ERROR: where the camera sees the pedestrian vs the looked-up position')
         w('  (timing offset = seconds still to ADD to that method\'s lookup time; 0 is perfect)')
         w(f'  {"method":{NW}s} {"clouds":>6s} {"median":>8s} {"p90":>8s} {"timing offset":>14s}')
-        names = [('A', 'A  latest /people pose (old behaviour)'),
+        names = [('A', 'A  latest pose, no time lookup (old behaviour)'),
                  ('B', f'B  pose at cloud stamp {off_txt}, hold at end (current)'),
                  ('C', f'C  pose at cloud stamp {off_txt}, extrapolate at end')]
         best = {}
@@ -312,8 +322,8 @@ class AlignmentAnalyzer:
             w(f'  {name:{NW}s} {used:6d} {_pct(e, 50):8.3f} {_pct(e, 90):8.3f} {off:>14s}')
             best[key] = (_pct(e, 90), f[1] if f else float('nan'))
             if key in ('B', 'C'):
-                for gname, mask in (('cloud inside the /people range', ~hold),
-                                    ('cloud newer than newest /people', hold)):
+                for gname, mask in ((f'cloud inside the {self.src} range', ~hold),
+                                    (f'cloud newer than newest {self.src}', hold)):
                     if np.count_nonzero(mask) >= 5:
                         fg = fit_subset(key, mask)
                         offg = f'{fg[1]:+.2f} s' if fg else 'n/a'
@@ -347,14 +357,14 @@ class AlignmentAnalyzer:
             w(f'  PASS: the current lookup (B) is within {p90_b:.2f} m of the camera for 90% of clouds '
               f'(limit {PASS_P90_M} m).')
             if not math.isnan(off_in):
-                w(f'        Residual timing offset (clouds inside the /people range): {off_in:+.2f} s '
+                w(f'        Residual timing offset (clouds inside the {self.src} range): {off_in:+.2f} s '
                   f'(limit +-{PASS_OFFSET_S} s). Alignment is sound.')
         else:
             w(f'  NOT YET: method B\'s 90th-percentile error is {p90_b:.2f} m (limit {PASS_P90_M} m).')
             hb = best.get('Bh')
             ib = best.get('Bi')
             if hb is not None and ib is not None and hb > ib + 0.05:
-                w(f'   - clouds newer than the newest /people sample are the problem (p90 {hb:.2f} m vs '
+                w(f'   - clouds newer than the newest {self.src} sample are the problem (p90 {hb:.2f} m vs '
                   f'{ib:.2f} m inside the range): holding the last pose is not enough.')
                 if p90_c < p90_b - 0.03:
                     w(f'     Extrapolating with the velocity (C) improves it to {p90_c:.2f} m -> adopt C.')
@@ -362,7 +372,7 @@ class AlignmentAnalyzer:
                     w('     Extrapolation does not help either -> publish the NEXT pose early '
                       '(stamped with the time the actor will reach it) and interpolate to it.')
             if not math.isnan(off_in) and abs(off_in) > PASS_OFFSET_S:
-                w(f'   - constant timing offset {off_in:+.2f} s remains (clouds inside the /people range): '
+                w(f'   - constant timing offset {off_in:+.2f} s remains (clouds inside the {self.src} range): '
                   f'set POSE_LOOKUP_OFFSET_SEC = {self.lookup_offset + off_in:+.2f} in hunav_config.py '
                   f'(currently {self.lookup_offset:+.2f}), restart the nodes and run this again.')
         # exclusion radius: independent of alignment, reported whenever it matters
@@ -392,6 +402,12 @@ class AlignmentAnalyzer:
 # ROS wiring
 # =============================================================================
 def run_node():
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', choices=('applied', 'people'), default='applied',
+                    help="pose stream under test: 'applied' = /people_smoothed_pose from applied_pose_relay.py "
+                         "(default); 'people' = HuNav's /people (the command), the old way")
+    args = ap.parse_args()
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
@@ -407,9 +423,14 @@ def run_node():
     class Validator(Node):
         def __init__(self):
             super().__init__('validate_time_alignment')
-            self.an = AlignmentAnalyzer(PEDESTRIAN_EXCLUSION_RADIUS, SPAWN_YAW, POSE_LOOKUP_OFFSET_SEC)
+            self.applied = args.source == 'applied'
+            self.an = AlignmentAnalyzer(PEDESTRIAN_EXCLUSION_RADIUS, SPAWN_YAW, POSE_LOOKUP_OFFSET_SEC,
+                                        source_label='applied pose' if self.applied else '/people',
+                                        hold_max=0.2 if self.applied else None)
+            self.prev_applied = None
             self.create_subscription(Odometry, '/odom', self._odom, qos_profile_sensor_data)
-            self.create_subscription(People, '/people', self._people, 10)
+            if not self.applied:
+                self.create_subscription(People, '/people', self._people, 10)
             self.create_subscription(PoseArray, '/people_smoothed_pose', self._smoothed, 10)
             self.create_subscription(PointCloud2, '/depth_cam/fused/points', self._cloud, qos_profile_sensor_data)
             self.create_timer(10.0, self._progress)
@@ -428,8 +449,19 @@ def run_node():
 
         def _smoothed(self, msg):
             if msg.poses:
-                o = msg.poses[0].orientation
-                self.an.on_smoothed(stamp_to_sec(msg.header.stamp), 2.0 * math.atan2(o.z, o.w))
+                t = stamp_to_sec(msg.header.stamp)
+                pose = msg.poses[0]
+                o = pose.orientation
+                yaw_odom = 2.0 * math.atan2(o.z, o.w)
+                if self.applied:
+                    # the relay's pose IS the pose under test: odom-equivalent frame -> world frame
+                    x, y, _ = odom_to_world(pose.position.x, pose.position.y, 0.0)
+                    prev, self.prev_applied = self.prev_applied, (t, x, y)
+                    if prev is None or t <= prev[0]:
+                        return
+                    dt = t - prev[0]
+                    self.an.on_people(t, x, y, (x - prev[1]) / dt, (y - prev[2]) / dt)
+                self.an.on_smoothed(t, yaw_odom)
 
         def _cloud(self, msg):
             s = pc2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True)

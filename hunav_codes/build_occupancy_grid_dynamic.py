@@ -18,9 +18,9 @@ WHAT'S NEW vs build_occupancy_grid.py
   hunav_model_bridge.py -- DiffDrive's odometry starts at (0,0,0)
   regardless of the robot's true spawn pose, so it must be composed with
   the known SPAWN_X/SPAWN_Y/SPAWN_YAW constants to recover real world pose).
-- Subscribes to /people (people_msgs/People, published by
-  hunav_model_bridge.py) to track each tracked pedestrian's LIVE
-  world-frame position.
+- Subscribes to /people_smoothed_pose (geometry_msgs/PoseArray, published by
+  applied_pose_relay.py -- see APPLIED POSE below; it used to be /people from
+  hunav_model_bridge.py) to track each tracked pedestrian's LIVE position.
 - Every incoming point-cloud frame, recomputes the exclusion zone list
   fresh from whatever the latest /odom + /people data says -- no CLI
   snapshot, no staleness if the robot or pedestrian moves.
@@ -48,8 +48,18 @@ LOOKUP OFFSET (2026-09-29) -- validate_time_alignment.py compared the lookup
 with the pedestrian points the camera really saw: they sit where /people had
 the body ~0.26 s BEFORE the cloud's stamp (a ~0.26 m error at walking speed,
 the leftover "ghost" in the grid). The pedestrian lookup therefore uses
-cloud stamp + POSE_LOOKUP_OFFSET_SEC (hunav_config.py, -0.26). The robot's
-/odom lookup is unchanged.
+cloud stamp + POSE_LOOKUP_OFFSET_SEC (hunav_config.py; -0.26 at the time,
+0.0 since the applied pose, see below). The robot's /odom lookup is unchanged.
+
+APPLIED POSE (2026-10-01) -- the pedestrian is now taken from
+/people_smoothed_pose, which applied_pose_relay.py fills from the pose the
+actor plugin REALLY applied (stamped with the simulation time of the step the
+cameras render), not from HuNav's /people (the command, which arrives at the
+rendered actor after a delay that differed from session to session: -0.10 to
+-0.29 s). The lookup is therefore at the cloud's own stamp:
+POSE_LOOKUP_OFFSET_SEC is 0.0 and stays only as a knob. The relay's poses are
+in the odom-equivalent frame; they are converted to the world frame here, like
+the robot's /odom.
 
 GRACEFUL START-UP: until at least one /odom message has been received,
 exclusion zones are treated as empty (nothing excluded yet) rather than
@@ -66,7 +76,7 @@ from rclpy.qos import qos_profile_sensor_data
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 from nav_msgs.msg import OccupancyGrid, Odometry
-from people_msgs.msg import People
+from geometry_msgs.msg import PoseArray
 
 # =============================================================================
 # UNCHANGED from build_occupancy_grid.py -- same validated core algorithm,
@@ -238,12 +248,11 @@ from hunav_config import (
 from time_sync import StampedPoseHistory, stamp_to_sec, clocks_match
 
 # How far past either end of a pose history a lookup may hold the end value.
-# /odom arrives ~30x per sim second, so 0.2 s is generous. /people arrives
-# once per HuNav step (0.5 s sim), so a cloud newer than the last /people by
-# up to ~one step is still paired with it; beyond that the lookup fails
-# rather than guessing.
+# /odom and the applied pedestrian pose both arrive ~30x per sim second, so
+# 0.2 s of hold is generous (a cloud can reach this node a few ms before the
+# newest pose does); beyond that the lookup fails rather than guessing.
 ODOM_MAX_HOLD_SEC = 0.2
-PEOPLE_MAX_HOLD_SEC = 0.6
+PEOPLE_MAX_HOLD_SEC = 0.2
 
 
 class OccupancyGridBuilderDynamic(Node):
@@ -252,18 +261,18 @@ class OccupancyGridBuilderDynamic(Node):
 
         self.robot_world_pose = None  # (x, y, yaw), latest from /odom
         self.odom_hist = StampedPoseHistory()      # world-frame robot pose by stamp
-        self.people_hist = {}                      # name -> StampedPoseHistory (world x, y)
+        self.people_hist = {}                      # 'person<i>' -> StampedPoseHistory (world x, y)
 
         self.pub = self.create_publisher(OccupancyGrid, '/occupancy_grid/base', 10)
         self.create_subscription(
             PointCloud2, '/depth_cam/fused/points', self.callback, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
-        self.create_subscription(People, '/people', self._people_cb, 10)
+        self.create_subscription(PoseArray, '/people_smoothed_pose', self._people_cb, 10)
 
         self.get_logger().info(
             f'Dynamic occupancy grid builder started. Grid: {GRID_N}x{GRID_N} cells '
             f'@ {RESOLUTION:.2f} m/cell. Exclusion zones now come from live /odom + '
-            f'/people subscriptions, not a CLI snapshot. Pedestrian exclusion radius: '
+            f'/people_smoothed_pose subscriptions (applied pose), not a CLI snapshot. Pedestrian exclusion radius: '
             f'{PEDESTRIAN_EXCLUSION_RADIUS} m.'
         )
 
@@ -273,11 +282,13 @@ class OccupancyGridBuilderDynamic(Node):
         self.robot_world_pose = odom_to_world(p.x, p.y, odom_yaw)
         self.odom_hist.add(stamp_to_sec(msg.header.stamp), *self.robot_world_pose)
 
-    def _people_cb(self, msg: People):
+    def _people_cb(self, msg: PoseArray):
         t = stamp_to_sec(msg.header.stamp)
-        for person in msg.people:
-            hist = self.people_hist.setdefault(person.name, StampedPoseHistory())
-            hist.add(t, person.position.x, person.position.y)
+        for i, pose in enumerate(msg.poses):
+            # applied_pose_relay.py publishes the odom-equivalent frame; exclusion works in the world frame
+            wx, wy, _ = odom_to_world(pose.position.x, pose.position.y, 0.0)
+            hist = self.people_hist.setdefault(f'person{i}', StampedPoseHistory())
+            hist.add(t, wx, wy)
 
     def _current_exclusion_zones(self, t: float):
         """
@@ -291,8 +302,8 @@ class OccupancyGridBuilderDynamic(Node):
         if robot is None:
             return []
         zones = []
-        # The body a depth cloud shows at stamp t is where /people put it at
-        # t + POSE_LOOKUP_OFFSET_SEC (negative; see hunav_config.py).
+        # The body a depth cloud shows at stamp t is where the applied pose put it at
+        # t + POSE_LOOKUP_OFFSET_SEC (0.0 with the applied pose; see hunav_config.py).
         t_ped = t + POSE_LOOKUP_OFFSET_SEC
         for name, hist in self.people_hist.items():
             ped = hist.at(t_ped, max_hold=PEOPLE_MAX_HOLD_SEC)
@@ -300,12 +311,12 @@ class OccupancyGridBuilderDynamic(Node):
                 latest_t = hist.latest_time()
                 if latest_t is not None and not clocks_match(t, latest_t):
                     self.get_logger().error(
-                        f'Cloud stamp {t:.2f} and /people stamp {latest_t:.2f} are on DIFFERENT '
-                        f'clocks -- cannot exclude "{name}". Run hunav_model_bridge.py with '
+                        f'Cloud stamp {t:.2f} and pedestrian pose stamp {latest_t:.2f} are on DIFFERENT '
+                        f'clocks -- cannot exclude "{name}". Run the relay and bridge with '
                         f'use_sim_time:=true.', throttle_duration_sec=5.0)
                 else:
                     self.get_logger().warn(
-                        f'No /people pose for "{name}" near cloud time {t:.2f} '
+                        f'No applied pedestrian pose for "{name}" near cloud time {t:.2f} '
                         f'(history {hist.first_time()}..{latest_t}); not excluded in this frame.',
                         throttle_duration_sec=5.0)
                 continue
@@ -314,7 +325,7 @@ class OccupancyGridBuilderDynamic(Node):
             latest_t = hist.latest_time()
             self.get_logger().info(
                 f'Exclusion for "{name}" taken at cloud time {POSE_LOOKUP_OFFSET_SEC:+.2f} s; '
-                f'that lookup time is {latest_t - t_ped:+.2f} s (sim) behind the latest /people '
+                f'that lookup time is {latest_t - t_ped:+.2f} s (sim) behind the newest applied pose '
                 f'(negative = newer than the newest sample, pose is held).',
                 throttle_duration_sec=10.0)
         return zones
