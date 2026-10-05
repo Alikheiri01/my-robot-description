@@ -5,7 +5,8 @@ A copy of my_robot_hunav_actor_launch.launch.py (which stays untouched), plus
 everything that used to need its own terminal:
     t= 3 s   robot, cameras, depth pipeline                      (as before)
     t= 6 s   pedestrian actor                                     (as before)
-    t= 8 s   hunav_model_bridge.py + applied_pose_relay.py
+    t= 8 s   agent_control/hunav_model_bridge_ctrl.py (bridge + goal/speed
+             control for agent_control.py; 2026-10-05) + applied_pose_relay.py
              heading_smoother.py is NOT started any more. The old launch file
              started it at this moment -- that is why applied_pose_relay.py
              found its lock taken and you had to pkill it.
@@ -120,6 +121,11 @@ T_GRID_START = 10.0
 T_VIEWERS_START = 12.0
 
 HUNAV_CODES = '/home/ali/ros2_ws/src/my_robot_description/hunav_codes'
+AGENT_CONTROL_DIR = '/home/ali/ros2_ws/src/my_robot_description/agent_control'
+# hunav_model_bridge_ctrl.py = the same bridge + live goal/speed control
+# (agent_control.py). To go back to the plain bridge use:
+#   LAUNCH_BRIDGE_SCRIPT = os.path.join(HUNAV_CODES, 'hunav_model_bridge.py')
+LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_ctrl.py')
 
 
 def generate_launch_description():
@@ -333,7 +339,7 @@ def generate_launch_description():
     # =========================================================================
 
     hunav_model_bridge_process = ExecuteProcess(
-        cmd=['python3', '/home/ali/ros2_ws/src/my_robot_description/hunav_codes/hunav_model_bridge.py',
+        cmd=['python3', LAUNCH_BRIDGE_SCRIPT,
              '--pose-mode', 'topic',
              # Step HuNav on Gazebo's clock, so /people shares the depth data's
              # clock and the pedestrian's speed is right in simulation time.
