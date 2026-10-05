@@ -125,6 +125,18 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /people_smoothed_pose
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Pedestrian goals
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /hunav/goal_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
