@@ -11,14 +11,16 @@ everything that used to need its own terminal:
              found its lock taken and you had to pkill it.
     t=10 s   build_occupancy_grid_dynamic.py
     t=12 s   pedestrian_crop_view_dynamic.py          (crop_view:=false to skip)
-    t=12 s   rviz2                         (rviz:=true rviz_config:=<file.rviz>)
+    t=12 s   rviz2 with my_robot_description/rviz/thesis_view.rviz (the SOURCE file,
+             so File > Save Config in RViz updates it directly): robot, fused points (best effort),
+             occupancy grid, pedestrian pose array          (rviz:=false to skip)
 NOT started here, on purpose: the dataset recorder and the validator. Once the
 crop viewer shows the pedestrian walking, run dataset_codes/record_session.py;
 it records, validates and prints the full report when you stop it.
 
     ros2 launch my_robot_description my_robot_hunav_full.launch.py
     ros2 launch my_robot_description my_robot_hunav_full.launch.py \
-        configuration_file:=other_scenario.yaml rviz:=true rviz_config:=/path/view.rviz
+        configuration_file:=other_scenario.yaml rviz:=false
 Ctrl+C stops everything together.
 
 ---- original notes of my_robot_hunav_actor_launch.launch.py ----
@@ -152,9 +154,9 @@ def generate_launch_description():
         DeclareLaunchArgument('plugin_position', default_value='0'),
         DeclareLaunchArgument('crop_view', default_value='true',
                               description='start pedestrian_crop_view_dynamic.py (matplotlib window)'),
-        DeclareLaunchArgument('rviz', default_value='false', description='start rviz2'),
-        DeclareLaunchArgument('rviz_config', default_value='',
-                              description='full path of your .rviz file (empty = rviz defaults)'),
+        DeclareLaunchArgument('rviz', default_value='true', description='start rviz2 (rviz:=false to skip)'),
+        DeclareLaunchArgument('rviz_config', default_value='/home/ali/ros2_ws/src/my_robot_description/rviz/thesis_view.rviz',
+                              description='full path of the .rviz file (empty = rviz defaults)'),
     ]
 
     # =========================================================================
