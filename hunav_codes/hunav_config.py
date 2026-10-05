@@ -102,7 +102,7 @@ STANDIN_Z = 0.8
 # =============================================================================
 # hunav_model_bridge.py
 # =============================================================================
-BRIDGE_UPDATE_RATE_HZ = 2.0  # deliberately conservative -- see that file's
+BRIDGE_UPDATE_RATE_HZ = 10.0  # deliberately conservative -- see that file's
                               # own docstring for the subprocess-overhead reasoning
 SET_POSE_TIMEOUT_MS = 300
 
@@ -204,7 +204,7 @@ FUTURE_HORIZON_LENGTH = 12
 # every grid frame would just duplicate near-identical poses. Sampling at
 # the pedestrian's own update rate is what makes TRAJECTORY_HISTORY_LENGTH's
 # "4 seconds of history" comment above actually true.
-DATASET_SAMPLE_PERIOD_SEC = 1.0 / BRIDGE_UPDATE_RATE_HZ
+DATASET_SAMPLE_PERIOD_SEC = 0.5
 
 # A pose/grid older than this is treated as stale -- same margin reasoning
 # as pedestrian_crop_view_dynamic.py's own STALE_THRESHOLD_SEC (comfortably
