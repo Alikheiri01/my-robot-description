@@ -16,6 +16,7 @@
          point. See package hunav_actor_driver. -->
     <plugin filename="HuNavActorDriver" name="hunav_actor_driver::HuNavActorDriver">
       <motion_mode>interpolate</motion_mode>
+      <animation_seconds_per_meter>4.15</animation_seconds_per_meter>
     </plugin>
   </actor>
 </sdf>
