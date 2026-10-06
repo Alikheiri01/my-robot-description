@@ -125,7 +125,8 @@ AGENT_CONTROL_DIR = '/home/ali/ros2_ws/src/my_robot_description/agent_control'
 # hunav_model_bridge_ctrl.py = the same bridge + live goal/speed control
 # (agent_control.py). To go back to the plain bridge use:
 #   LAUNCH_BRIDGE_SCRIPT = os.path.join(HUNAV_CODES, 'hunav_model_bridge.py')
-LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_ctrl.py')
+#LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_ctrl.py')
+LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_nav.py')
 
 
 def generate_launch_description():
