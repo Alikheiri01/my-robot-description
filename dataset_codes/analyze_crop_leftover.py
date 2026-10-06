@@ -28,7 +28,13 @@ Crop layout (same as inspect_dataset_samples.py --view): array row = y
 (left +), array column = x (ahead of the pedestrian +); x spans
 -CROP_BEHIND..CROP_FORWARD, y spans -CROP_SIDE..CROP_SIDE, anchor at (0, 0).
 
-USAGE   python3 analyze_crop_leftover.py [samples_dir]
+OBSTACLES (2026-10-06): with real obstacles in the scene, their cells near
+the pedestrian are NOT pedestrian leftovers. If the run folder has an
+obstacles.yaml (record_session.py saves one) -- or --obstacles is given --
+cells within OBSTACLE_MARGIN_M of a known obstacle are left out. Without it
+the result is as before (and wrong in scenes with obstacles).
+
+USAGE   python3 analyze_crop_leftover.py [samples_dir] [--obstacles PATH]
 """
 import argparse
 import sys
@@ -49,6 +55,7 @@ NEAR_R = 1.5        # m: occupied cells within this of the anchor count as "left
 MOVING = 0.5        # m/s
 SLOW = 0.3          # m/s
 MIN_LEFTOVER_SAMPLES = 10
+OBSTACLE_MARGIN_M = 0.25   # grid cells of an obstacle face sit up to ~1-2 cells off its true outline
 SPEED_BINS = [(0.0, 0.3), (0.3, 0.7), (0.7, 5.0)]
 OCCUPIED = 100
 
@@ -61,8 +68,29 @@ def cell_centres(shape):
     return xs, ys
 
 
-def load(samples_dir: Path):
+def find_obstacles_file(samples_dir: Path, given=None):
+    if given:
+        return Path(given)
+    p = samples_dir.parent / 'obstacles.yaml'
+    return p if p.exists() else None
+
+
+def on_obstacle_mask(x, y, anchor, obstacles):
+    """True for crop cells (anchor-local x, y) lying on a known obstacle."""
+    from hunav_config import odom_to_world
+    from world_obstacles import min_distance
+    ax, ay, ayaw = anchor
+    c, s = np.cos(ayaw), np.sin(ayaw)
+    out = np.zeros(len(x), dtype=bool)
+    for i, (lx, ly) in enumerate(zip(x, y)):
+        wx, wy, _ = odom_to_world(ax + c * lx - s * ly, ay + s * lx + c * ly, 0.0)
+        out[i] = min_distance(wx, wy, obstacles)[0] <= OBSTACLE_MARGIN_M
+    return out
+
+
+def load(samples_dir: Path, obstacles=None):
     rows = []
+    load.ignored = 0
     for f in sorted(samples_dir.glob('*.npz')):
         with np.load(f, allow_pickle=True) as d:
             crop, hist, fut = d['crop'], d['trajectory_history'], d['future_target']
@@ -73,6 +101,11 @@ def load(samples_dir: Path):
             r_idx, c_idx = np.nonzero(crop == OCCUPIED)
             x, y = xs[c_idx], ys[r_idx]
             near = np.hypot(x, y) <= NEAR_R
+            if obstacles and 'ped_anchor_odom' in d and near.any():
+                idx = np.nonzero(near)[0]
+                on = on_obstacle_mask(x[idx], y[idx], d['ped_anchor_odom'], obstacles)
+                near[idx[on]] = False
+                load.ignored += int(on.sum())
             to_robot = None
             if 'robot_pose_odom' in d and 'ped_anchor_odom' in d:
                 r, a = d['robot_pose_odom'], d['ped_anchor_odom']
@@ -87,8 +120,16 @@ def load(samples_dir: Path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('samples_dir', nargs='?', default=str(_THIS_DIR / 'samples'))
+    ap.add_argument('--obstacles', default=None, help="obstacle yaml (default: the run folder's obstacles.yaml)")
     args = ap.parse_args()
-    rows = load(Path(args.samples_dir).expanduser().resolve())
+    sdir = Path(args.samples_dir).expanduser().resolve()
+    obs_file = find_obstacles_file(sdir, args.obstacles)
+    obstacles = []
+    if obs_file:
+        sys.path.insert(0, str(_THIS_DIR.parent / 'agent_control'))
+        from world_obstacles import load_obstacles
+        obstacles = load_obstacles(obs_file)
+    rows = load(sdir, obstacles)
     if not rows:
         print('no samples found')
         return
@@ -96,7 +137,12 @@ def main():
     has = np.array([len(r['x']) > 0 for r in rows])
     moving, slow = speed >= MOVING, speed < SLOW
     print(f'{len(rows)} samples: {int(moving.sum())} moving (>= {MOVING} m/s), {int(slow.sum())} slow (< {SLOW} m/s)')
-    print(f'Occupied cells within {NEAR_R} m of the anchor are counted as leftover pedestrian.\n')
+    print(f'Occupied cells within {NEAR_R} m of the anchor are counted as leftover pedestrian.')
+    if obs_file:
+        print(f'Known obstacles: {len(obstacles)} from {obs_file}; {load.ignored} cells on them left out.\n')
+    else:
+        print('Known obstacles: none given (no obstacles.yaml in the run folder): obstacle cells near the '
+              'pedestrian would be counted as leftover.\n')
 
     print(f'{"speed (m/s)":14s} {"samples":>8s} {"with leftover":>14s} {"mean x of leftover cells (+ = ahead)":>38s}')
     for lo, hi in SPEED_BINS:

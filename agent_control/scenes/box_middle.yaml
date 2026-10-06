@@ -1,0 +1,12 @@
+# box_middle -- one 0.6 m box on the straight line between the yaml goals
+# (1.4, 1.4) and (3.0, 3.0), 0.7 m from each (world frame).
+# Load:  python3 spawn_obstacles.py scenes/box_middle.yaml
+obstacles:
+  - name: box1
+    type: box
+    x: 2.2
+    y: 2.2
+    yaw: 0.0
+    size_x: 0.6
+    size_y: 0.6
+    height: 1.0
