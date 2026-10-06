@@ -1,0 +1,29 @@
+# obstacles.yaml -- the obstacles the pedestrian knows about (2026-10-05).
+#
+# WORLD frame = Gazebo's coordinates (what Gazebo's GUI shows for a model's
+# pose). Not the RViz/map frame: the robot's odom frame is rotated and shifted
+# against the world (spawn pose in hunav_config.py). The red outlines on
+# /hunav/nav_markers in RViz show where these really are.
+#
+# Used by:
+#   hunav_model_bridge_nav.py  -- the pedestrian avoids them (re-read on every save)
+#   spawn_obstacles.py         -- puts the same boxes into Gazebo (run after every save)
+#   analyze_obstacle_clearance.py -- checks the recorded walk kept away from them
+#
+#   box:       x, y, yaw (rad, optional, default 0), size_x, size_y, height (optional, 1.0)
+#   cylinder:  x, y, radius, height (optional, 1.0)
+#
+# Empty list = open floor:   obstacles: []
+
+# box1 sits between the yaml goals (1.4, 1.4) and (3.0, 3.0), on the straight
+# line, and 0.7 m from each goal, so the pedestrian has to walk around it.
+# Keep every obstacle at least ~0.8 m away from every goal.
+obstacles:
+  - name: box1
+    type: box
+    x: 2.2
+    y: 2.2
+    yaw: 0.0
+    size_x: 0.6
+    size_y: 0.6
+    height: 1.0

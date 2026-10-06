@@ -27,7 +27,6 @@ PASS criteria (the ones we agreed on 2026-10-04):
     inspector  0 samples with issues
     leftover   at most LEFTOVER_LIMIT_PCT % of moving samples with pedestrian cells
     smoothness the walk does not zig-zag (analyze_walk_smoothness.py, if present)
-    obstacles  the pedestrian never walks into an obstacle (analyze_obstacle_clearance.py, if present)
 """
 import argparse
 import json
@@ -48,7 +47,6 @@ RECORDER = THIS_DIR / 'dataset_recorder.py'
 INSPECTOR = THIS_DIR / 'inspect_dataset_samples.py'
 LEFTOVER = THIS_DIR / 'analyze_crop_leftover.py'
 SMOOTH = THIS_DIR / 'analyze_walk_smoothness.py'
-CLEAR = THIS_DIR / 'analyze_obstacle_clearance.py'
 VALIDATOR = HUNAV_DIR / 'validate_time_alignment.py'
 
 LEFTOVER_LIMIT_PCT = 10.0
@@ -177,16 +175,6 @@ def judge_smoothness(text):
     return [('walk smoothness', m.group(1), detail)]
 
 
-def judge_clearance(text):
-    m = last_match(text, r'OBSTACLE CLEARANCE: (PASS|FAIL)')
-    if not m:
-        return [('obstacle clearance', 'NO DATA', (text.splitlines() or ['no output'])[-1])]
-    c = last_match(text, r'crop check\s+: (.*)')
-    g = last_match(text, r'ground truth : (.*)')
-    detail = ' | '.join(x.group(1).strip() for x in (c, g) if x)
-    return [('obstacle clearance', m.group(1), detail)]
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--duration', type=float, default=None, help='stop after this many seconds (wall clock)')
@@ -268,9 +256,8 @@ def main():
     ins_out = run_tool([INSPECTOR, samples_dir], THIS_DIR)
     lo_out = run_tool([LEFTOVER, samples_dir], THIS_DIR)
     sm_out = run_tool([SMOOTH, samples_dir], THIS_DIR) if SMOOTH.exists() else ''
-    cl_out = run_tool([CLEAR, samples_dir], THIS_DIR) if CLEAR.exists() else ''
 
-    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else [])
+    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else [])
     rec_status = last_match(rec_log, r'(Stopped\..*|\d+ samples saved, .*)')
     overall = 'PASS' if all(s == 'PASS' for _, s, _ in checks) else 'NOT YET'
 
@@ -286,8 +273,7 @@ def main():
                         '---- validate_time_alignment.py ----\n' + (val_report or '(not run / no report)'),
                         '---- inspect_dataset_samples.py ----\n' + ins_out,
                         '---- analyze_crop_leftover.py ----\n' + lo_out,
-                        '---- analyze_walk_smoothness.py ----\n' + (sm_out or '(not found)'),
-                        '---- analyze_obstacle_clearance.py ----\n' + (cl_out or '(not found)')])
+                        '---- analyze_walk_smoothness.py ----\n' + (sm_out or '(not found)')])
     (run_dir / 'report.txt').write_text(full + '\n')
     info['overall'] = overall
     info['checks'] = checks

@@ -12,3 +12,4 @@ __pycache__/
 .idea/
 dataset_codes/samples/
 dataset_codes/runs/
+agent_control/.spawned_obstacles
