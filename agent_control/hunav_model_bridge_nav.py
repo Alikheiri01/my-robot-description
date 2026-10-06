@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 """
 hunav_model_bridge_nav.py -- hunav_model_bridge_ctrl.py plus OBSTACLES: the
-pedestrian sees the obstacles listed in obstacles.yaml and walks around them
-(2026-10-05).
+pedestrian sees the obstacles and walks around them (2026-10-05).
+
+WHERE THE OBSTACLES COME FROM (2026-10-06)
+  default (--obstacles gazebo): GAZEBO IS THE TRUTH. About once a second the
+      bridge reads the shapes and poses of the models in the running world
+      (gazebo_scene.py). Add a box/cylinder/sphere from Gazebo's toolbar, move
+      it, delete it: the pedestrian reacts within a second or two. The world
+      starts empty, so a scene without obstacles needs nothing at all.
+      Saved scenes: save_scene.py writes what Gazebo has now into a yaml,
+      spawn_obstacles.py puts a saved yaml back into Gazebo.
+  --obstacles PATH.yaml: the old way, the yaml file is the truth (re-read when
+      it changes on disk).
+  Either way the obstacles in use are written to current_obstacles.yaml next to
+  this file whenever they change; record_session.py stores a copy with every
+  recording so the checks know where the obstacles were.
 
 WHAT IS NEW COMPARED TO hunav_model_bridge_ctrl.py
   * Every /compute_agents request carries the closest point of each nearby
@@ -15,8 +28,8 @@ WHAT IS NEW COMPARED TO hunav_model_bridge_ctrl.py
     one at a time, moving on as soon as the next corner can be seen. Without
     this the social force alone makes the agent stop in front of a box it
     walks straight at, forever.
-  * obstacles.yaml is re-read whenever it changes on disk: edit it while the
-    simulation runs and the route is re-planned within a second.
+  * Obstacles change while the simulation runs (see above): the route is
+    re-planned at once.
   * RViz: /hunav/nav_markers (MarkerArray, frame map) shows the obstacles as
     HuNav knows them (red outlines), the planned route (cyan) and the corner
     the agent is walking to now (cyan ball). Add it once in RViz:
@@ -33,14 +46,16 @@ HuNav only ever gets one point at a time.
 
 NEEDS the local HuNav patch (patch_hunav_agent_manager.py), as before.
 
-Lives in my_robot_description/agent_control/, next to obstacles.yaml and
-world_obstacles.py. Run exactly like the ctrl bridge (the launch file does it):
+Lives in my_robot_description/agent_control/, next to world_obstacles.py and
+gazebo_scene.py. Run exactly like the ctrl bridge (the launch file does it):
     python3 hunav_model_bridge_nav.py --pose-mode topic --ros-args -p use_sim_time:=true
-Options:  --obstacles PATH   (default: obstacles.yaml next to this file)
+Options:  --obstacles gazebo|PATH   (default: gazebo)
 """
 import math
 import os
 import sys
+import threading
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -50,8 +65,10 @@ from world_obstacles import (CLEARANCE_M, MIN_CLEARANCE_M, OBSTACLE_RANGE_M,  # 
                              RouteFollower, closest_points, load_obstacles,
                              min_distance)
 
-DEFAULT_OBSTACLES = os.path.join(_HERE, 'obstacles.yaml')
+DEFAULT_OBSTACLES = 'gazebo'
+CURRENT_FILE = os.path.join(_HERE, 'current_obstacles.yaml')
 RELOAD_CHECK_SEC = 1.0
+GAZEBO_POLL_SEC = 1.0
 MARKER_PERIOD_SEC = 0.5
 SAME_POINT_M = 1e-3
 
@@ -70,7 +87,13 @@ def main():
         def __init__(self, obstacles_path, **kw):
             super().__init__(**kw)
             self.obs_path = obstacles_path
+            self.from_gazebo = obstacles_path == 'gazebo'
             self.obs_mtime = None
+            self.obs_signature = None
+            self._gz_result = None          # (obstacles, signature, warnings) from the reader thread
+            self._gz_error = None
+            self._gz_warned = set()
+            self._gz_lock = threading.Lock()
             self.obstacles = []
             self.cmd = None             # GoalCommander: delivers the current corner to HuNav
             self.follower = None        # RouteFollower: user goals -> current corner
@@ -84,9 +107,14 @@ def main():
             self.marker_pub = self.create_publisher(MarkerArray, '/hunav/nav_markers', 10)
             self.create_subscription(PoseArray, '/hunav/agent_goals', self._goals_cb, 10)
             self.create_subscription(Float32, '/hunav/agent_speed', self._speed_cb, 10)
-            self.create_timer(RELOAD_CHECK_SEC, self._reload_obstacles)
             self.create_timer(MARKER_PERIOD_SEC, self._draw)
-            self._reload_obstacles()
+            if self.from_gazebo:
+                self.get_logger().info('Obstacles: read live from Gazebo (add/move/delete them in the Gazebo GUI).')
+                threading.Thread(target=self._gazebo_reader, daemon=True).start()
+                self.create_timer(0.5, self._apply_gazebo_obstacles)
+            else:
+                self.create_timer(RELOAD_CHECK_SEC, self._reload_obstacles)
+                self._reload_obstacles()
 
         def _log(self, lvl, msg):
             # One call line PER LEVEL: rclpy remembers the level used at each
@@ -103,6 +131,58 @@ def main():
                 lg.info(msg)
 
         # ---- obstacles -------------------------------------------------------
+        def _gazebo_reader(self):
+            """Background thread: the ign calls take a few hundred ms and must not
+            hold up the 10 Hz HuNav steps."""
+            from gazebo_scene import read_obstacles
+            while True:
+                warnings = []
+                try:
+                    obs = read_obstacles(warn=warnings.append)
+                    sig = tuple(sorted((o.name, o.kind, round(o.x, 2), round(o.y, 2), round(math.degrees(o.yaw)),
+                                        round(o.hx, 2), round(o.hy, 2), round(o.r, 2)) for o in obs))
+                    with self._gz_lock:
+                        self._gz_result, self._gz_error = (obs, sig, warnings), None
+                except Exception as e:
+                    with self._gz_lock:
+                        self._gz_error = str(e)
+                time.sleep(GAZEBO_POLL_SEC)
+
+        def _apply_gazebo_obstacles(self):
+            with self._gz_lock:
+                result, err = self._gz_result, self._gz_error
+            if err:
+                self.get_logger().warn(f'Gazebo did not answer ({err}); keeping the last known obstacles.',
+                                       throttle_duration_sec=10.0)
+            if result is None:
+                return
+            obs, sig, warnings = result
+            for w in warnings:
+                if w not in self._gz_warned:
+                    self._gz_warned.add(w)
+                    self.get_logger().warn(w)
+            if sig != self.obs_signature:
+                self.obs_signature = sig
+                self._set_obstacles(obs, 'Gazebo')
+
+        def _set_obstacles(self, obs, source):
+            self.obstacles = list(obs)
+            self.get_logger().info(
+                f'{len(self.obstacles)} obstacle(s) from {source} (world frame):'
+                + ''.join(f'\n    {o.describe()}' for o in self.obstacles))
+            try:
+                from gazebo_scene import to_yaml
+                tmp = CURRENT_FILE + '.tmp'
+                with open(tmp, 'w') as f:
+                    f.write(to_yaml(self.obstacles, strip_prefix=None,
+                                    header=f'obstacles in use by the bridge, from {source}, {time.strftime("%Y-%m-%d %H:%M:%S")}'))
+                os.replace(tmp, CURRENT_FILE)
+            except Exception as e:
+                self.get_logger().error(f'could not write {CURRENT_FILE}: {e}')
+            if self.follower is not None:
+                self.follower.set_obstacles(self.obstacles)
+                self._check_goals()
+
         def _reload_obstacles(self):
             try:
                 mtime = os.path.getmtime(self.obs_path)
@@ -112,20 +192,15 @@ def main():
                 return
             self.obs_mtime = mtime
             if mtime is None:
-                self.obstacles = []
                 self.get_logger().warn(f'No obstacle file at {self.obs_path}: the pedestrian sees NO obstacles.')
+                self._set_obstacles([], 'nowhere')
             else:
                 try:
-                    self.obstacles = load_obstacles(self.obs_path)
+                    obs = load_obstacles(self.obs_path)
                 except Exception as e:      # keep the old list on a typo, say why
                     self.get_logger().error(f'{self.obs_path} not loaded ({e}); keeping the previous obstacles.')
                     return
-                self.get_logger().info(
-                    f'{len(self.obstacles)} obstacle(s) from {self.obs_path} (world frame):'
-                    + ''.join(f'\n    {o.describe()}' for o in self.obstacles))
-            if self.follower is not None:
-                self.follower.set_obstacles(self.obstacles)
-                self._check_goals()
+                self._set_obstacles(obs, self.obs_path)
 
         # ---- goals and speed ----------------------------------------------------
         def initialize_agents(self):
@@ -159,7 +234,7 @@ def main():
                 if d < MIN_CLEARANCE_M:
                     self._log('warn', f'goal {i + 1} ({x:.2f}, {y:.2f}) is {"INSIDE" if d <= 0 else f"only {d:.2f} m from"} '
                                       f'obstacle {o.name}: the pedestrian cannot reach it and will stop in front of '
-                                      f'the obstacle. Move the goal or the obstacle (obstacles.yaml).')
+                                      f'the obstacle. Move the goal or the obstacle.')
 
         def _goals_cb(self, msg):
             if self.cmd is None:
@@ -260,7 +335,8 @@ def main():
     args, _ = parser.parse_known_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
 
     rclpy.init()
-    node = HunavModelBridgeNav(os.path.abspath(os.path.expanduser(args.obstacles)),
+    src = args.obstacles if args.obstacles == 'gazebo' else os.path.abspath(os.path.expanduser(args.obstacles))
+    node = HunavModelBridgeNav(src,
                                pose_mode=args.pose_mode, debug_raw=args.debug_raw)
     if not node.initialize_agents():
         node.get_logger().error('Failed to initialize agents from /get_agents. Exiting.')

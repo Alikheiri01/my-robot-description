@@ -28,6 +28,12 @@ PASS criteria (the ones we agreed on 2026-10-04):
     leftover   at most LEFTOVER_LIMIT_PCT % of moving samples with pedestrian cells
     smoothness the walk does not zig-zag (analyze_walk_smoothness.py, if present)
     obstacles  the pedestrian never walks into an obstacle (analyze_obstacle_clearance.py, if present)
+    scene      the obstacles did not change while recording
+
+OBSTACLES (2026-10-06): the bridge writes the obstacles it uses to
+agent_control/current_obstacles.yaml. This script copies it into the run
+folder as obstacles.yaml, so the checks know where the obstacles were. Do not
+add/move/delete obstacles while recording: the report flags it.
 """
 import argparse
 import json
@@ -50,6 +56,15 @@ LEFTOVER = THIS_DIR / 'analyze_crop_leftover.py'
 SMOOTH = THIS_DIR / 'analyze_walk_smoothness.py'
 CLEAR = THIS_DIR / 'analyze_obstacle_clearance.py'
 VALIDATOR = HUNAV_DIR / 'validate_time_alignment.py'
+CURRENT_OBSTACLES = THIS_DIR.parent / 'agent_control' / 'current_obstacles.yaml'
+
+
+def read_obstacles_text():
+    """current_obstacles.yaml without its comment lines (they hold a timestamp), or None."""
+    try:
+        return '\n'.join(l for l in CURRENT_OBSTACLES.read_text().splitlines() if not l.startswith('#'))
+    except OSError:
+        return None
 
 LEFTOVER_LIMIT_PCT = 10.0
 STARTUP_CHECK_SEC = 6.0        # a child that dies this early failed to start
@@ -136,7 +151,10 @@ def judge_validator(text):
     out.append(('exclusion', 'PASS' if ex and ex.group(1).startswith('only') else 'FAIL', ex.group(1).strip() if ex else 'no verdict line'))
     hd = last_match(text, r'HEADING: (.*)')
     if hd:
-        out.append(('heading', 'PASS' if hd.group(1).startswith('PASS') else 'FAIL', hd.group(1).strip()))
+        h = hd.group(1).strip()
+        # "too few walking cloud pairs" = nothing to judge (e.g. obstacles near the
+        # pedestrian make the validator skip clouds), not a failure
+        out.append(('heading', 'PASS' if h.startswith('PASS') else ('NO DATA' if h.startswith('too few') else 'FAIL'), h))
     else:
         out.append(('heading', 'NO DATA', 'too few walking cloud pairs'))
     return out
@@ -171,9 +189,11 @@ def judge_smoothness(text):
     m = last_match(text, r'WALK SMOOTHNESS: (PASS|FAIL)')
     if not m:
         return [('walk smoothness', 'NO DATA', (text.splitlines() or ['no output'])[-1])]
-    t = last_match(text, r'turn per 0.5 s step : (.*)')
-    c = last_match(text, r'crop tilt\s+: (.*)')
-    detail = '; '.join(x.group(1).strip() for x in (t, c) if x)
+    f = last_match(text, r'left/right flips\s+: (\d+%)')
+    c = last_match(text, r'crop tilt\s+: median ([\d.]+ deg)')
+    t = last_match(text, r'turn per 0.5 s step : median [\d.]+ deg, p90 ([\d.]+ deg)')
+    detail = ', '.join(x for x in ((f'flips {f.group(1)}' if f else ''), (f'tilt median {c.group(1)}' if c else ''),
+                                    (f'turn p90 {t.group(1)}' if t else '')) if x)
     return [('walk smoothness', m.group(1), detail)]
 
 
@@ -208,6 +228,13 @@ def main():
     print(f'Run folder: {run_dir}')
     if cfg.get('PAUSE_PHASE_ENABLED'):
         print('  WARNING: PAUSE_PHASE_ENABLED is True in hunav_config.py (debug duty cycle, not for real data).')
+    scene_start = read_obstacles_text()
+    scene_changes = 0
+    if scene_start is None:
+        print(f'  NOTE: no {CURRENT_OBSTACLES.name} (is the bridge hunav_model_bridge_nav.py?): '
+              f'obstacle checks will not know the obstacles.')
+    else:
+        (run_dir / 'obstacles_start.yaml').write_text(CURRENT_OBSTACLES.read_text())
     procs = [('recorder', *start([RECORDER, samples_dir], THIS_DIR, run_dir / 'recorder.log'))]
     if not args.no_validate:
         procs.append(('validator', *start([VALIDATOR], HUNAV_DIR, run_dir / 'validator.log')))
@@ -244,6 +271,11 @@ def main():
                 stop_now['flag'] = True
         if args.duration and now - t0 >= args.duration:
             stop_now['flag'] = True
+        cur = read_obstacles_text()
+        if cur != scene_start and cur is not None and scene_start is not None:
+            scene_changes += 1
+            scene_start = cur
+            print('  WARNING: the obstacles changed during the recording.', flush=True)
         if now >= next_progress and not stop_now['flag']:
             next_progress += PROGRESS_EVERY_SEC
             n = len(list(samples_dir.glob('*.npz')))
@@ -261,6 +293,8 @@ def main():
         (run_dir / 'run_info.json').write_text(json.dumps(info, indent=2, default=str))
         sys.exit(1)
 
+    if CURRENT_OBSTACLES.exists():
+        (run_dir / 'obstacles.yaml').write_text(CURRENT_OBSTACLES.read_text())
     print('Running the inspector and the leftover analysis...', flush=True)
     rec_log = (run_dir / 'recorder.log').read_text(errors='replace')
     val_log = '' if args.no_validate else (run_dir / 'validator.log').read_text(errors='replace')
@@ -271,8 +305,17 @@ def main():
     cl_out = run_tool([CLEAR, samples_dir], THIS_DIR) if CLEAR.exists() else ''
 
     checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else [])
+    if (run_dir / 'obstacles.yaml').exists():
+        checks.append(('scene unchanged', 'PASS' if scene_changes == 0 else 'FAIL',
+                       'obstacles constant during the recording' if scene_changes == 0 else
+                       f'obstacles changed {scene_changes}x while recording: obstacle checks use the final scene'))
     rec_status = last_match(rec_log, r'(Stopped\..*|\d+ samples saved, .*)')
-    overall = 'PASS' if all(s == 'PASS' for _, s, _ in checks) else 'NOT YET'
+    if all(s == 'PASS' for _, s, _ in checks):
+        overall = 'PASS'
+    elif any(s == 'FAIL' for _, s, _ in checks):
+        overall = 'NOT YET'
+    else:
+        overall = 'PASS, but ' + ', '.join(n for n, s, _ in checks if s != 'PASS') + ' could not be checked (NO DATA)'
 
     lines = ['=' * 100, f'RECORDING SESSION REPORT   {run_dir.name}   ({info["wall_seconds"]:.0f} s wall clock)',
              f'config: offset {cfg.get("POSE_LOOKUP_OFFSET_SEC")} s, exclusion radius {cfg.get("PEDESTRIAN_EXCLUSION_RADIUS")} m, '
@@ -294,7 +337,7 @@ def main():
     (run_dir / 'run_info.json').write_text(json.dumps(info, indent=2, default=str))
     print(full)
     print(f'\nSaved: {run_dir / "report.txt"}  (samples in {samples_dir})')
-    sys.exit(0 if overall == 'PASS' else 2)
+    sys.exit(0 if overall.startswith('PASS') else 2)
 
 
 if __name__ == '__main__':

@@ -18,8 +18,10 @@ TWO INDEPENDENT CHECKS on the recorded samples
      anchor), cells within IGNORE_NEAR_ANCHOR_M of the anchor and positions
      within SKIP_ROWS_NEAR_ANCHOR_M of it are not used -- other samples, whose
      anchors are elsewhere, cover those places. Catches a wrong obstacles.yaml.
-  2. GROUND-TRUTH CHECK (if obstacles.yaml exists): the same positions, taken
-     to the world frame, against the obstacle outlines of the yaml. Exact.
+  2. GROUND-TRUTH CHECK: the same positions, taken to the world frame, against
+     the obstacle outlines the pedestrian was given. Exact. The obstacles come
+     from the run folder's obstacles.yaml (record_session.py saves the
+     bridge's current_obstacles.yaml there), or from --obstacles.
 
 PASS: ground truth -- no position closer than TOUCH_M to an obstacle outline;
       crop -- at most CROP_TOUCH_LIMIT_PCT % of the checked positions closer
@@ -47,7 +49,6 @@ NEAR_M = 1.0                   # positions this close to an obstacle are "passin
 IGNORE_NEAR_ANCHOR_M = 1.0     # crop cells this close to the anchor may be the pedestrian itself
 SKIP_ROWS_NEAR_ANCHOR_M = 1.2
 CROP_TOUCH_LIMIT_PCT = 1.0
-DEFAULT_OBSTACLES = _THIS_DIR.parent / 'agent_control' / 'obstacles.yaml'
 
 
 def to_odom(anchor, lx, ly):
@@ -98,8 +99,10 @@ def analyze(samples_dir, obstacles):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('samples_dir')
-    ap.add_argument('--obstacles', default=str(DEFAULT_OBSTACLES))
+    ap.add_argument('--obstacles', default=None, help="obstacle yaml (default: the run folder's obstacles.yaml)")
     args = ap.parse_args()
+    if args.obstacles is None:
+        args.obstacles = str(Path(args.samples_dir).expanduser().resolve().parent / 'obstacles.yaml')
     obstacles = []
     if Path(args.obstacles).exists():
         from world_obstacles import load_obstacles
@@ -125,7 +128,7 @@ def main():
         ok &= pct <= CROP_TOUCH_LIMIT_PCT
 
     if not obstacles:
-        print(f'  ground truth : no obstacle file / empty list ({args.obstacles}), skipped')
+        print(f'  ground truth : no obstacles known for this run ({args.obstacles}), skipped')
     elif len(truth_d) == 0:
         print('  ground truth : samples have no anchor pose (old schema), skipped')
     else:
