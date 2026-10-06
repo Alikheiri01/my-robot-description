@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """
-spawn_obstacles.py -- put the obstacles of obstacles.yaml into the running
-Gazebo world, exactly where the pedestrian thinks they are (2026-10-05).
+spawn_obstacles.py -- load a SAVED SCENE (a yaml of obstacles) into the
+running Gazebo world (2026-10-05, updated 2026-10-06).
 
-WHY
-The pedestrian avoids what obstacles.yaml lists; the robot's depth camera sees
-what is in Gazebo. If the two disagree (a box moved by hand in the GUI, a typo
-in the yaml) the pedestrian dodges a box that is not there and walks through
-one that is -- and the recording is wrong without any error. Spawning the
-Gazebo boxes FROM the yaml makes them agree by construction, and makes every
-scenario repeatable (same file -> same scene).
+Since 2026-10-06 Gazebo itself is the truth: the bridge reads whatever is in
+the world, so you can also just add boxes from Gazebo's toolbar. This script is
+for REPEATING a scene exactly: save_scene.py writes what Gazebo has now into
+scenes/<name>.yaml, this script puts it back.
 
 WHAT IT DOES
 Removes the models it spawned before (all named obs_<name>) and spawns one
 static model per obstacle: box (size_x, size_y, height) or cylinder (radius,
-height); 'height' is optional in the yaml (default 1.0 m). Run it again after
-every edit of obstacles.yaml (the bridge re-reads the yaml by itself).
+height); 'height' is optional in the yaml (default 1.0 m). The bridge then
+sees them in Gazebo like any other model.
 
 USAGE (simulation running)
-    python3 spawn_obstacles.py                 # obstacles.yaml next to this file
-    python3 spawn_obstacles.py my_scene.yaml   # another file (give the bridge the same one)
-    python3 spawn_obstacles.py --remove        # only remove what it spawned
+    python3 spawn_obstacles.py scenes/box_middle.yaml   # load a saved scene
+    python3 spawn_obstacles.py --remove                 # remove what it spawned before
+Models you added by hand in the GUI are not touched (delete those in the GUI).
 
 Uses Gazebo Fortress's own command line tool (ign service), world 'empty'
 (WORLD_NAME in hunav_config.py).
@@ -84,7 +81,7 @@ def remove(names):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('file', nargs='?', default=str(HERE / 'obstacles.yaml'))
+    ap.add_argument('file', nargs='?', default=None, help='scene yaml, e.g. scenes/box_middle.yaml')
     ap.add_argument('--remove', action='store_true')
     args = ap.parse_args()
 
@@ -95,6 +92,8 @@ def main():
     STATE_FILE.write_text('')
     if args.remove:
         return
+    if not args.file:
+        sys.exit('Give a scene file, e.g.  python3 spawn_obstacles.py scenes/box_middle.yaml')
 
     obstacles = load_obstacles(args.file)
     if not obstacles:

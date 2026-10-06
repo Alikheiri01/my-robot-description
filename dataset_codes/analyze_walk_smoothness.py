@@ -22,6 +22,16 @@ WHAT IT MEASURES, on the samples' own pose rows (history + future, 0.5 s apart)
     direction the pedestrian travels from 0.5 s before to 0.5 s after the
     anchor. This is the tilt you see in the crop viewer.
 
+VERDICT (changed 2026-10-06, for scenes with obstacles)
+The first limits (turn p90, tilt p90 <= 10 deg) were set on STRAIGHT walks.
+Walking around obstacles has real turns, which raise both numbers without any
+zig-zag. What tells the zig-zag apart, measured on real runs:
+                         2 Hz zig-zag     10 Hz straight    10 Hz around boxes
+    left/right flips         86%               0%                 13%
+    crop tilt median        13.5 deg          0.0 deg             1.3 deg
+So the verdict is now: FAIL if flips > FLIP_LIMIT_PCT or tilt median >
+TILT_MEDIAN_LIMIT_DEG. Turn and tilt p90 are still printed (how much it turns).
+
 USAGE   python3 analyze_walk_smoothness.py <samples_dir>
 """
 import math
@@ -33,8 +43,8 @@ import numpy as np
 MOVING = 0.5           # m/s
 REVERSAL_DEG = 120.0
 FLIP_MIN_DEG = 5.0
-TURN_LIMIT_DEG = 10.0  # p90 turn per 0.5 s step on walking stretches
-TILT_LIMIT_DEG = 10.0  # p90 crop tilt
+FLIP_LIMIT_PCT = 40.0         # zig-zag: consecutive turns alternate left/right
+TILT_MEDIAN_LIMIT_DEG = 5.0   # typical crop is turned away from the walking direction
 
 
 def wrap(a):
@@ -87,12 +97,14 @@ def main():
         return
     p90t, p90c = float(np.percentile(turns, 90)), float(np.percentile(tilts, 90)) if len(tilts) else float('nan')
     print(f'{n} samples, {len(turns)} walking step pairs, {len(tilts)} walking anchors')
-    print(f'  turn per 0.5 s step : median {np.median(turns):.1f} deg, p90 {p90t:.1f} deg (limit {TURN_LIMIT_DEG:.0f})')
-    print(f'  left/right flips    : {100 * flip:.0f}% of consecutive turns (zig-zag signature; straight walking ~ low)')
-    print(f'  crop tilt           : median {np.median(tilts):.1f} deg, p90 {p90c:.1f} deg (limit {TILT_LIMIT_DEG:.0f})')
-    ok = p90t <= TURN_LIMIT_DEG and (math.isnan(p90c) or p90c <= TILT_LIMIT_DEG)
+    med_tilt = float(np.median(tilts)) if len(tilts) else float('nan')
+    flip_pct = 100 * flip if not math.isnan(flip) else 0.0
+    print(f'  turn per 0.5 s step : median {np.median(turns):.1f} deg, p90 {p90t:.1f} deg (info: real turns raise it)')
+    print(f'  left/right flips    : {flip_pct:.0f}% of consecutive turns (limit {FLIP_LIMIT_PCT:.0f}%; zig-zag signature)')
+    print(f'  crop tilt           : median {med_tilt:.1f} deg (limit {TILT_MEDIAN_LIMIT_DEG:.0f}), p90 {p90c:.1f} deg (info)')
+    ok = flip_pct <= FLIP_LIMIT_PCT and (math.isnan(med_tilt) or med_tilt <= TILT_MEDIAN_LIMIT_DEG)
     print(f'WALK SMOOTHNESS: {"PASS" if ok else "FAIL"} -- '
-          + ('the walk is smooth.' if ok else 'the pedestrian zig-zags; check BRIDGE_UPDATE_RATE_HZ (>= 10) in hunav_config.py.'))
+          + ('no zig-zag.' if ok else 'the pedestrian zig-zags; check BRIDGE_UPDATE_RATE_HZ (>= 10) in hunav_config.py.'))
 
 
 if __name__ == '__main__':
