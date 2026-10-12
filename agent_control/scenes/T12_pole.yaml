@@ -1,0 +1,11 @@
+# T12_pole -- thin pole on the walking line
+# made for the verification round (2026-10-07). World frame (Gazebo).
+# The same obstacles in the RViz/odom frame are given in the comment of each entry.
+# Load:  python3 spawn_obstacles.py scenes/T12_pole.yaml
+obstacles:
+  - name: pole      # RViz/odom: (4.0, 0.0)
+    type: cylinder
+    x: 2.828
+    y: 2.828
+    radius: 0.05
+    height: 1.5
