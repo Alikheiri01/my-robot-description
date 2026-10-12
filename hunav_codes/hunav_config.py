@@ -147,7 +147,7 @@ PEDESTRIAN_EXCLUSION_RADIUS = 0.65
 # value is 0.0. Keep it as a knob only: if validate_time_alignment.py reports
 # a steady residual with the applied pose, put its suggestion here.
 # The robot's own /odom lookup does NOT use this offset.
-POSE_LOOKUP_OFFSET_SEC = 0.0
+POSE_LOOKUP_OFFSET_SEC = 0.05
 
 # Where the actor plugin publishes the pose it applied (ign-transport topic;
 # the launch file bridges it to ROS under the same name as a PoseArray) and
