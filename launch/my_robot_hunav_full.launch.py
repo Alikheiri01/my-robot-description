@@ -4,6 +4,8 @@ my_robot_hunav_full.launch.py -- ONE launch for the whole data pipeline (2026-10
 A copy of my_robot_hunav_actor_launch.launch.py (which stays untouched), plus
 everything that used to need its own terminal:
     t= 3 s   robot, cameras, depth pipeline                      (as before)
+             + robot_pose_relay.py (2026-10-14): /odom = the robot's TRUE pose
+             from Gazebo (wheel odometry skids while turning; it is on /odom_wheel)
     t= 6 s   pedestrian actor                                     (as before)
     t= 8 s   agent_control/hunav_model_bridge_ctrl.py (bridge + goal/speed
              control for agent_control.py; 2026-10-05) + applied_pose_relay.py
@@ -128,6 +130,11 @@ AGENT_CONTROL_DIR = '/home/ali/ros2_ws/src/my_robot_description/agent_control'
 #LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_ctrl.py')
 LAUNCH_BRIDGE_SCRIPT = os.path.join(AGENT_CONTROL_DIR, 'hunav_model_bridge_nav.py')
 
+# Where /odom comes from (2026-10-14):
+#   'truth' = Gazebo's true robot pose (OdometryPublisher in robot_truth_odom.xacro)
+#   'wheel' = the old wheel odometry (skids while the 4-wheel robot turns)
+ROBOT_POSE_SOURCE = 'truth'
+
 
 def generate_launch_description():
     pkg_name = 'my_robot_description'
@@ -247,7 +254,13 @@ def generate_launch_description():
         package='ros_gz_bridge', executable='parameter_bridge',
         arguments=[
             '/cmd_vel@geometry_msgs/msg/Twist@ignition.msgs.Twist',
-            '/odom@nav_msgs/msg/Odometry@ignition.msgs.Odometry',
+            # CHANGED (2026-10-14): Gazebo -> ROS only ('['). This is the WHEEL odometry
+            # (DiffDrive). It is remapped to /odom_wheel below; robot_pose_relay.py
+            # publishes the real /odom.
+            '/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            # NEW (2026-10-14): the robot's TRUE world pose from the OdometryPublisher
+            # plugin (robot_truth_odom.xacro). Gazebo -> ROS only.
+            '/robot_truth/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
             '/tf@tf2_msgs/msg/TFMessage@ignition.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState@ignition.msgs.Model',
             '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
@@ -266,7 +279,17 @@ def generate_launch_description():
             # it into /people_smoothed_pose (replaces heading_smoother.py).
             f'/model/{ACTOR_NAME}/applied_pose@geometry_msgs/msg/PoseArray[ignition.msgs.Pose_V',
         ],
+        # NEW (2026-10-14): the ROS-side name of the wheel odometry becomes /odom_wheel,
+        # so that /odom is free for the true pose from robot_pose_relay.py.
+        remappings=[('/odom', '/odom_wheel')],
         output='screen',
+    )
+    # NEW (2026-10-14): publishes /odom for the whole pipeline (grid builder, recorder,
+    # validator, HuNav bridge, crop viewer) from the robot's TRUE pose in Gazebo.
+    # Starts together with the bridge, so /odom exists long before the grid builder (t=10 s).
+    robot_pose_relay_process = ExecuteProcess(
+        cmd=['python3', os.path.join(HUNAV_CODES, 'robot_pose_relay.py'), '--source', ROBOT_POSE_SOURCE],
+        cwd=HUNAV_CODES, output='screen',
     )
     left_camera_tf_node = Node(
         package='tf2_ros', executable='static_transform_publisher',
@@ -305,7 +328,7 @@ def generate_launch_description():
     )
 
     robot_and_pipeline_actions = [
-        node_robot_state_publisher, spawn_entity, bridge,
+        node_robot_state_publisher, spawn_entity, bridge, robot_pose_relay_process,
         left_camera_tf_node, right_camera_tf_node,
         camera_info_fixer_process, depth_proc_container, depth_fusion_process,
     ]

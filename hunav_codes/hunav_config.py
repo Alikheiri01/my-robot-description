@@ -148,7 +148,7 @@ PEDESTRIAN_EXCLUSION_RADIUS = 0.65
 # a steady residual with the applied pose, put its suggestion here.
 # The robot's own /odom lookup does NOT use this offset.
 POSE_LOOKUP_OFFSET_SEC = 0.05
-
+ROBOT_POSE_LOOKUP_OFFSET_SEC = 0.0   # T17b: robot corrected too
 # Where the actor plugin publishes the pose it applied (ign-transport topic;
 # the launch file bridges it to ROS under the same name as a PoseArray) and
 # how far back applied_pose_relay.py looks to get the direction of motion.
