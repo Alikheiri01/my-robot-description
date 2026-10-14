@@ -77,6 +77,8 @@ EXTRAP_MAX = 0.6        # s
 MIN_SPEED_FOR_FIT = 0.2  # m/s; a standing pedestrian says nothing about timing
 MAX_COND = 30.0         # regression needs walking in both directions
 MIN_USED = 15
+ROBOT_TURN_MIN = 0.15   # rad/s: clouds taken while the robot turns at least this fast (robot timing scan)
+ROBOT_SCAN = 0.40       # s: robot pose offsets scanned, -this .. +this
 PASS_P90_M = 0.15       # about one grid cell (0.1 m) plus margin
 PASS_OFFSET_S = 0.10
 # heading check: consecutive-cloud pairs in which the pedestrian visibly walks
@@ -116,12 +118,14 @@ def _pct(a, q):
 class AlignmentAnalyzer:
     """Pure logic (no ROS): feed events in ARRIVAL order, then call report()."""
 
-    def __init__(self, exclusion_radius, spawn_yaw=0.0, lookup_offset=0.0, source_label='/people', hold_max=None):
+    def __init__(self, exclusion_radius, spawn_yaw=0.0, lookup_offset=0.0, source_label='/people', hold_max=None,
+                 robot_offset=0.0):
         self.excl_r = exclusion_radius
         self.src = source_label     # name of the pose stream under test, for the report
         self.hold_max = HOLD_MAX if hold_max is None else hold_max   # how long the consumers hold the newest pose
         self.spawn_yaw = spawn_yaw
         self.lookup_offset = lookup_offset   # POSE_LOOKUP_OFFSET_SEC the nodes under test apply (B and C)
+        self.robot_offset = robot_offset     # ROBOT_POSE_LOOKUP_OFFSET_SEC: robot pose at cloud stamp + this
         self.odom = StampedPoseHistory(max_age_sec=1e9)
         self.ppl = StampedPoseHistory(max_age_sec=1e9)
         self.vel = {}                 # round(stamp, 3) -> (vx, vy)
@@ -147,7 +151,7 @@ class AlignmentAnalyzer:
     def on_cloud(self, t_c, pts_b):
         """pts_b: Nx2 obstacle points in base_link (ground already removed)."""
         self.n_clouds += 1
-        robot = self.odom.at(t_c, max_hold=0.2)
+        robot = self.odom.at(t_c + self.robot_offset, max_hold=0.2)
         if robot is None:
             self.rejects['no robot pose at cloud time'] += 1
             return
@@ -202,7 +206,10 @@ class AlignmentAnalyzer:
 
         body = d <= BODY_R
         latest_yaw = self.yaw_hist.latest()
-        rec = {'t': t_c, 'tl': t_l, 'c': ctr, 'yaw_latest': latest_yaw[2] if latest_yaw else None, 'robot': np.array([rx, ry]), 'hold': hold, 'n': int(body.sum()),
+        # centre in the robot frame (for the robot-time scan) and the robot's turn rate
+        dxw, dyw = ctr[0] - rx, ctr[1] - ry
+        ctr_b = np.array([c * dxw + s * dyw, -s * dxw + c * dyw])
+        rec = {'ctr_b': ctr_b, 't': t_c, 'tl': t_l, 'c': ctr, 'yaw_latest': latest_yaw[2] if latest_yaw else None, 'robot': np.array([rx, ry]), 'hold': hold, 'n': int(body.sum()),
                'extent90': _pct(d[body], 90), 'extent_max': float(d[body].max())}
         for key, p in (('A', pA), ('B', pB), ('C', pC)):
             rec['p' + key] = p
@@ -260,6 +267,52 @@ class AlignmentAnalyzer:
         return float(np.mean(np.array(errs['step']) > 45))
 
     # --- report ------------------------------------------------------------
+    def _robot_time_report(self, L):
+        """
+        ROBOT POSE TIMING (2026-10-13). The camera's points are placed in the world
+        with the robot pose at  cloud stamp + robot offset. If that time is wrong,
+        a TURNING robot rotates the whole picture (a straight drive or a standing
+        robot hardly shows it). Scan the robot offset and report which one puts
+        the camera centre closest to the pedestrian, on the clouds taken while the
+        robot turns. Does not change anything; it tells what to set.
+        """
+        w = L.append
+
+        def omega(t):        # robot turn rate around t, from the full /odom history
+            ra, rb = self.odom.at(t - 0.1, max_hold=0.2), self.odom.at(t + 0.1, max_hold=0.2)
+            return wrap_angle(rb[2] - ra[2]) / 0.2 if (ra is not None and rb is not None) else 0.0
+        recs = [r for r in self.records if abs(omega(r['t'])) >= ROBOT_TURN_MIN]
+        w(f'\nROBOT POSE TIMING (clouds while the robot turns >= {ROBOT_TURN_MIN:.2f} rad/s: {len(recs)} of '
+          f'{len(self.records)})')
+        if len(recs) < MIN_USED:
+            w('  too few turning clouds to judge (the robot did not turn, or the pedestrian was not in view).')
+            return
+        rows = []
+        for dt in np.round(np.arange(-ROBOT_SCAN, ROBOT_SCAN + 1e-9, 0.02), 3):
+            errs = []
+            for r in recs:
+                rp = self.odom.at(r['t'] + dt, max_hold=0.2)
+                if rp is None:
+                    continue
+                c, s = math.cos(rp[2]), math.sin(rp[2])
+                cw = np.array([rp[0] + c * r['ctr_b'][0] - s * r['ctr_b'][1],
+                               rp[1] + s * r['ctr_b'][0] + c * r['ctr_b'][1]])
+                errs.append(float(np.hypot(*(cw - r['pB']))))
+            if len(errs) >= MIN_USED:
+                rows.append((float(dt), float(np.median(errs)), _pct(np.array(errs), 90), len(errs)))
+        if not rows:
+            w('  no usable scan.')
+            return
+        best = min(rows, key=lambda x: x[1])
+        cur = min(rows, key=lambda x: abs(x[0] - self.robot_offset))
+        w(f'  robot pose at cloud stamp {cur[0]:+.2f} s (current): median {cur[1]:.3f} m, p90 {cur[2]:.3f} m')
+        w(f'  best robot offset           {best[0]:+.2f} s           : median {best[1]:.3f} m, p90 {best[2]:.3f} m')
+        for dt, med, p90, n in rows[::5]:
+            w(f'     offset {dt:+.2f} s: median {med:.3f} m  p90 {p90:.3f} m  ({n} clouds)')
+        edge = abs(best[0]) >= ROBOT_SCAN - 1e-6
+        w('  -> ' + ('best value at the edge of the scan: the cause is probably not robot pose timing.' if edge else
+                     f'set ROBOT_POSE_LOOKUP_OFFSET_SEC = {best[0]:+.2f} in hunav_config.py if it clearly beats the current one.'))
+
     def report(self):
         L = []
         w = L.append
@@ -347,6 +400,7 @@ class AlignmentAnalyzer:
           f'{_pct(ext, 90) + k_ref + min(best["B"][0], best["C"][0]):.2f} m   (configured: {self.excl_r:.2f} m)')
 
         heading = self._heading_report(L)
+        self._robot_time_report(L)
 
         w('\nVERDICT')
         p90_b, p90_c = best['B'][0], best['C'][0]
@@ -418,6 +472,10 @@ def run_node():
     from people_msgs.msg import People
     from hunav_config import (odom_to_world, yaw_from_quaternion, PEDESTRIAN_EXCLUSION_RADIUS,
                               SPAWN_YAW, POSE_LOOKUP_OFFSET_SEC)
+    try:   # 2026-10-13: robot pose at the same corrected time as the pedestrian (see hunav_config.py)
+        from hunav_config import ROBOT_POSE_LOOKUP_OFFSET_SEC
+    except ImportError:
+        ROBOT_POSE_LOOKUP_OFFSET_SEC = 0.0
     from time_sync import stamp_to_sec
 
     class Validator(Node):
@@ -426,7 +484,8 @@ def run_node():
             self.applied = args.source == 'applied'
             self.an = AlignmentAnalyzer(PEDESTRIAN_EXCLUSION_RADIUS, SPAWN_YAW, POSE_LOOKUP_OFFSET_SEC,
                                         source_label='applied pose' if self.applied else '/people',
-                                        hold_max=0.2 if self.applied else None)
+                                        hold_max=0.2 if self.applied else None,
+                                        robot_offset=ROBOT_POSE_LOOKUP_OFFSET_SEC)
             self.prev_applied = None
             self.create_subscription(Odometry, '/odom', self._odom, qos_profile_sensor_data)
             if not self.applied:

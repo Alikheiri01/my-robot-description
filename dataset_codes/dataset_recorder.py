@@ -105,6 +105,10 @@ from hunav_config import (
     TRAJECTORY_HISTORY_LENGTH, FUTURE_HORIZON_LENGTH, DATASET_SAMPLE_PERIOD_SEC,
 )
 from time_sync import StampedPoseHistory, clocks_match, stamp_to_sec, wrap_angle
+try:   # 2026-10-13: robot pose looked up at the same corrected time as the pedestrian (see hunav_config.py)
+    from hunav_config import ROBOT_POSE_LOOKUP_OFFSET_SEC
+except ImportError:   # line not in hunav_config.py yet -> old behaviour
+    ROBOT_POSE_LOOKUP_OFFSET_SEC = 0.0
 
 DEFAULT_OUTPUT_DIR = _THIS_DIR / 'samples'
 
@@ -233,7 +237,7 @@ class AlignedSampler:
 
     def _start_anchor(self, cand):
         t_g, T, loader = cand
-        robot = self.odom.at(t_g, max_hold=ODOM_MAX_HOLD_SEC)
+        robot = self.odom.at(t_g + ROBOT_POSE_LOOKUP_OFFSET_SEC, max_hold=ODOM_MAX_HOLD_SEC)
         if robot is None:
             self.drops['no robot pose (/odom) at the grid time'] += 1
             return
