@@ -246,6 +246,10 @@ def decode_channels(grid: np.ndarray):
 from hunav_config import (
     PEDESTRIAN_EXCLUSION_RADIUS, POSE_LOOKUP_OFFSET_SEC, odom_to_world, yaw_from_quaternion)
 from time_sync import StampedPoseHistory, stamp_to_sec, clocks_match
+try:   # 2026-10-13: robot pose looked up at the same corrected time as the pedestrian (see hunav_config.py)
+    from hunav_config import ROBOT_POSE_LOOKUP_OFFSET_SEC
+except ImportError:   # line not in hunav_config.py yet -> old behaviour
+    ROBOT_POSE_LOOKUP_OFFSET_SEC = 0.0
 
 # How far past either end of a pose history a lookup may hold the end value.
 # /odom and the applied pedestrian pose both arrive ~30x per sim second, so
@@ -296,7 +300,7 @@ class OccupancyGridBuilderDynamic(Node):
         pedestrian looked up AT t (see TIME ALIGNMENT in the module
         docstring). Empty list until the robot pose is known.
         """
-        robot = self.odom_hist.at(t, max_hold=ODOM_MAX_HOLD_SEC)
+        robot = self.odom_hist.at(t + ROBOT_POSE_LOOKUP_OFFSET_SEC, max_hold=ODOM_MAX_HOLD_SEC)
         if robot is None:
             robot = self.robot_world_pose  # startup only; robot is static in these tests
         if robot is None:

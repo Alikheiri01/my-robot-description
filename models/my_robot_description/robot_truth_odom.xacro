@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- robot_truth_odom.xacro (2026-10-14)
+     Publishes the robot's TRUE world pose from Gazebo on /robot_truth/odometry.
+     Wheel odometry (DiffDrive) skids while this 4-wheel robot turns, so the dataset
+     pipeline gets its /odom from this pose instead (robot_pose_relay.py). -->
+<robot xmlns:xacro="https://www.ros.org/wiki/xacro">
+  <gazebo>
+    <plugin filename="ignition-gazebo-odometry-publisher-system"
+            name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_topic>/robot_truth/odometry</odom_topic>
+      <tf_topic>/robot_truth/tf</tf_topic>
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>base_link</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>2</dimensions>
+    </plugin>
+  </gazebo>
+</robot>
