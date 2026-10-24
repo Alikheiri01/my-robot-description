@@ -1,0 +1,13 @@
+# T15_occlusion -- box between robot and walking line: the pedestrian passes behind it
+# made for the verification round (2026-10-07). World frame (Gazebo).
+# The same obstacles in the RViz/odom frame are given in the comment of each entry.
+# Load:  python3 spawn_obstacles.py scenes/T15_occlusion.yaml
+obstacles:
+  - name: blocker      # RViz/odom: (3.0, 0.0)
+    type: box
+    x: 2.121
+    y: 2.121
+    yaw: 0.7854
+    size_x: 1.2
+    size_y: 1.2
+    height: 1.5

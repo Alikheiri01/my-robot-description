@@ -5,6 +5,6 @@
     <xacro:include filename="gazebo_control.xacro"/>
     <!--<xacro:include filename="stereo_camera.xacro"/>-->
     <xacro:include filename="depth_camera.xacro"/>
-    
+    <xacro:include filename="robot_truth_odom.xacro"/>   <!-- true pose for the dataset pipeline -->
 
 </robot>

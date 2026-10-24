@@ -1,0 +1,14 @@
+<?xml version="1.0" ?>
+<sdf version="1.7">
+  <actor name="test_actor">
+    <pose>0.0 0.0 0.03 0 0 0</pose>
+    <skin>
+      <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/actor - relative paths/tip/files/meshes/talk_b.dae</filename>
+      <scale>1.0</scale>
+    </skin>
+    <animation name="talk_b">
+      <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/actor - relative paths/tip/files/meshes/talk_b.dae</filename>
+      <scale>1.0</scale>
+    </animation>
+  </actor>
+</sdf>
