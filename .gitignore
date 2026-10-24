@@ -11,3 +11,6 @@ __pycache__/
 .vscode/
 .idea/
 dataset_codes/samples/
+dataset_codes/runs/
+agent_control/.spawned_obstacles
+agent_control/current_obstacles.yaml

@@ -1,0 +1,18 @@
+# saved from Gazebo by save_scene.py (world frame)
+obstacles:
+  - name: box
+    type: box
+    x: 1.804
+    y: 4.596
+    yaw: -0.0000
+    size_x: 1.000
+    size_y: 1.000
+    height: 1.000
+  - name: box_0
+    type: box
+    x: 5.137
+    y: 1.904
+    yaw: -0.0000
+    size_x: 1.000
+    size_y: 1.000
+    height: 1.000

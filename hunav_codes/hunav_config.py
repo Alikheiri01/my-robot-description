@@ -91,7 +91,7 @@ def world_to_odom(world_x: float, world_y: float, world_yaw: float):
 # Gazebo world / pedestrian stand-in model
 # =============================================================================
 WORLD_NAME = 'empty'
-MODEL_NAME = 'pedestrian_standin'
+MODEL_NAME = 'hunav_actor'
 
 # Height at which the pedestrian_standin model's root is placed -- matches
 # HuNavSystemPlugin_fortress.cpp's own updateGazeboPedestrians(), which sets
@@ -102,7 +102,7 @@ STANDIN_Z = 0.8
 # =============================================================================
 # hunav_model_bridge.py
 # =============================================================================
-BRIDGE_UPDATE_RATE_HZ = 2.0  # deliberately conservative -- see that file's
+BRIDGE_UPDATE_RATE_HZ = 10.0  # deliberately conservative -- see that file's
                               # own docstring for the subprocess-overhead reasoning
 SET_POSE_TIMEOUT_MS = 300
 
@@ -117,7 +117,7 @@ SET_POSE_TIMEOUT_MS = 300
 # is pipeline latency on a moving target, not a coordinate/orientation bug.
 # Set back to False once the experiment is done -- this is a debugging aid,
 # not a permanent behavior.
-PAUSE_PHASE_ENABLED = True
+PAUSE_PHASE_ENABLED = False
 PAUSE_PHASE_MOVE_SEC = 2.5    # how long the pedestrian walks before freezing
 PAUSE_PHASE_FREEZE_SEC = 4.0  # how long it holds still -- generous, to give
                                # RViz's slower depth pipeline time to fully
@@ -129,7 +129,33 @@ PAUSE_PHASE_FREEZE_SEC = 4.0  # how long it holds still -- generous, to give
 # Matches (with a small safety margin) thesis_static_agent.yaml's agent
 # radius (0.4m). NOTE: still a separate hand-set value, not read from the
 # YAML directly -- update by hand if that scenario's radius ever changes.
-PEDESTRIAN_EXCLUSION_RADIUS = 0.5
+PEDESTRIAN_EXCLUSION_RADIUS = 0.65
+
+# =============================================================================
+# Pedestrian pose lookup against depth data (grid builder, crop viewer, ...)
+# =============================================================================
+# Seconds ADDED to a depth message's timestamp before the pedestrian's pose
+# is looked up in the pose history (time_sync.StampedPoseHistory.at).
+#
+# HISTORY (2026-10-01): the pose history used to be HuNav's /people, i.e. the
+# COMMANDED pose, which reaches the rendered actor only after a delay. A lookup
+# offset compensated for that delay, but validate_time_alignment.py measured
+# it at -0.10, -0.24, -0.29 and -0.06 s in four sessions, so no constant was
+# reliable. The pose history is now the plugin's APPLIED pose
+# (applied_pose_relay.py, stamped with the simulation time of the step the
+# actor was moved in -- the same instant the cameras render), so the correct
+# value is 0.0. Keep it as a knob only: if validate_time_alignment.py reports
+# a steady residual with the applied pose, put its suggestion here.
+# The robot's own /odom lookup does NOT use this offset.
+POSE_LOOKUP_OFFSET_SEC = 0.05
+ROBOT_POSE_LOOKUP_OFFSET_SEC = 0.0   # T17b: robot corrected too
+# Where the actor plugin publishes the pose it applied (ign-transport topic;
+# the launch file bridges it to ROS under the same name as a PoseArray) and
+# how far back applied_pose_relay.py looks to get the direction of motion.
+# The window is short on purpose: the applied path is exact (no noise), and a
+# long window would smear a 180 degree reversal.
+APPLIED_POSE_TOPIC = f'/model/{MODEL_NAME}/applied_pose'
+APPLIED_HEADING_WINDOW_SEC = 0.10
 
 # =============================================================================
 # Heading smoothing (heading_smoother.py)
@@ -147,6 +173,14 @@ HEADING_SMOOTHING_WINDOW = 3
 # instead of updating it. thesis_static_agent.yaml's current max_vel is
 # 1.0 m/s; 0.1 m/s is roughly 10% of that.
 MIN_SPEED_FOR_HEADING_UPDATE = 0.1
+
+# When a new step points more than this many degrees away from the current
+# averaging window (a turnaround at a goal), the window is emptied so the
+# heading flips immediately instead of being dragged by the old direction for
+# HEADING_SMOOTHING_WINDOW-1 more samples. Measured 2026-09-29: without it the
+# smoothed heading was >120 deg wrong in 23% of walking samples (one wrong
+# sample after every reversal). Gentler turns are still smoothed.
+HEADING_REVERSAL_RESET_DEG = 90.0
 
 # =============================================================================
 # Trajectory / crop dataset pairing (Phase D, dataset export)
@@ -170,7 +204,7 @@ FUTURE_HORIZON_LENGTH = 12
 # every grid frame would just duplicate near-identical poses. Sampling at
 # the pedestrian's own update rate is what makes TRAJECTORY_HISTORY_LENGTH's
 # "4 seconds of history" comment above actually true.
-DATASET_SAMPLE_PERIOD_SEC = 1.0 / BRIDGE_UPDATE_RATE_HZ
+DATASET_SAMPLE_PERIOD_SEC = 0.5
 
 # A pose/grid older than this is treated as stale -- same margin reasoning
 # as pedestrian_crop_view_dynamic.py's own STALE_THRESHOLD_SEC (comfortably

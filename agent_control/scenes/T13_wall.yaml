@@ -1,0 +1,13 @@
+# T13_wall -- wide wall 1.5 m behind the walking line
+# made for the verification round (2026-10-07). World frame (Gazebo).
+# The same obstacles in the RViz/odom frame are given in the comment of each entry.
+# Load:  python3 spawn_obstacles.py scenes/T13_wall.yaml
+obstacles:
+  - name: wall      # RViz/odom: (5.5, 0.0)
+    type: box
+    x: 3.889
+    y: 3.889
+    yaw: 0.7854
+    size_x: 0.2
+    size_y: 3.0
+    height: 1.2
