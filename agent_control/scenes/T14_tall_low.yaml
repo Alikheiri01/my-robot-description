@@ -1,0 +1,21 @@
+# T14_tall_low -- tall narrow box and a LOW box (0.35 m) beside the line
+# made for the verification round (2026-10-07). World frame (Gazebo).
+# The same obstacles in the RViz/odom frame are given in the comment of each entry.
+# Load:  python3 spawn_obstacles.py scenes/T14_tall_low.yaml
+obstacles:
+  - name: tall      # RViz/odom: (4.0, 1.2)
+    type: box
+    x: 1.980
+    y: 3.677
+    yaw: 0.7854
+    size_x: 0.3
+    size_y: 0.3
+    height: 2.0
+  - name: low      # RViz/odom: (4.0, -1.2)
+    type: box
+    x: 3.677
+    y: 1.980
+    yaw: 0.7854
+    size_x: 0.6
+    size_y: 0.6
+    height: 0.35
