@@ -29,6 +29,9 @@ PASS criteria (the ones we agreed on 2026-10-04):
     smoothness the walk does not zig-zag (analyze_walk_smoothness.py, if present)
     obstacles  the pedestrian never walks into an obstacle (analyze_obstacle_clearance.py, if present)
     scene      the obstacles did not change while recording
+    visibility the crops agree with the camera geometry (0 contradictions); the share of
+               samples with the pedestrian seen / usable is reported, not judged
+               (analyze_ped_visibility.py, if present; 2026-10-24)
 
 OBSTACLES (2026-10-06): the bridge writes the obstacles it uses to
 agent_control/current_obstacles.yaml. This script copies it into the run
@@ -55,6 +58,7 @@ INSPECTOR = THIS_DIR / 'inspect_dataset_samples.py'
 LEFTOVER = THIS_DIR / 'analyze_crop_leftover.py'
 SMOOTH = THIS_DIR / 'analyze_walk_smoothness.py'
 CLEAR = THIS_DIR / 'analyze_obstacle_clearance.py'
+VIS = THIS_DIR / 'analyze_ped_visibility.py'
 VALIDATOR = HUNAV_DIR / 'validate_time_alignment.py'
 CURRENT_OBSTACLES = THIS_DIR.parent / 'agent_control' / 'current_obstacles.yaml'
 
@@ -207,6 +211,16 @@ def judge_clearance(text):
     return [('obstacle clearance', m.group(1), detail)]
 
 
+def judge_visibility(text):
+    m = last_match(text, r'VISIBILITY: (.*)')
+    if not m:
+        return [('pedestrian visibility', 'NO DATA', (text.splitlines() or ['no output'])[-1])]
+    v = m.group(1).strip().rstrip('.')
+    # how often the pedestrian is in view depends on the scenario (not a pass/fail);
+    # a crop showing a pedestrian the camera could not see would be a real bug
+    return [('pedestrian visibility', 'FAIL' if 'CONTRADICTIONS' in v else 'PASS', v)]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--duration', type=float, default=None, help='stop after this many seconds (wall clock)')
@@ -303,8 +317,9 @@ def main():
     lo_out = run_tool([LEFTOVER, samples_dir], THIS_DIR)
     sm_out = run_tool([SMOOTH, samples_dir], THIS_DIR) if SMOOTH.exists() else ''
     cl_out = run_tool([CLEAR, samples_dir], THIS_DIR) if CLEAR.exists() else ''
+    vi_out = run_tool([VIS, samples_dir], THIS_DIR) if VIS.exists() else ''
 
-    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else [])
+    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else []) + (judge_visibility(vi_out) if vi_out else [])
     if (run_dir / 'obstacles.yaml').exists():
         checks.append(('scene unchanged', 'PASS' if scene_changes == 0 else 'FAIL',
                        'obstacles constant during the recording' if scene_changes == 0 else
@@ -330,7 +345,8 @@ def main():
                         '---- inspect_dataset_samples.py ----\n' + ins_out,
                         '---- analyze_crop_leftover.py ----\n' + lo_out,
                         '---- analyze_walk_smoothness.py ----\n' + (sm_out or '(not found)'),
-                        '---- analyze_obstacle_clearance.py ----\n' + (cl_out or '(not found)')])
+                        '---- analyze_obstacle_clearance.py ----\n' + (cl_out or '(not found)'),
+                        '---- analyze_ped_visibility.py ----\n' + (vi_out or '(not found)')])
     (run_dir / 'report.txt').write_text(full + '\n')
     info['overall'] = overall
     info['checks'] = checks
