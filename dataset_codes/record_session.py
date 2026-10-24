@@ -32,6 +32,8 @@ PASS criteria (the ones we agreed on 2026-10-04):
     visibility the crops agree with the camera geometry (0 contradictions); the share of
                samples with the pedestrian seen / usable is reported, not judged
                (analyze_ped_visibility.py, if present; 2026-10-24)
+    start gate collection_gate.py was running, so every sample's window was checked
+               (NO DATA = no gate: samples are ungated, fine for tests, not for real data)
 
 OBSTACLES (2026-10-06): the bridge writes the obstacles it uses to
 agent_control/current_obstacles.yaml. This script copies it into the run
@@ -211,6 +213,20 @@ def judge_clearance(text):
     return [('obstacle clearance', m.group(1), detail)]
 
 
+def judge_gate(rec_status):
+    m = re.search(r'; gate: ((?:on|NOT RUNNING|not heard)[^;]*)', rec_status or '')
+    if not m:
+        return [('start gate', 'NO DATA', 'no gate line in the recorder status (old recorder?)')]
+    g = m.group(1).strip()
+    if g.startswith('on'):
+        reasons = re.findall(r'(\d+)x start gate: ([^,;]*)', rec_status)
+        detail = g + (' (' + ', '.join(f'{n}x {r.strip()}' for n, r in reasons) + ')' if reasons else '')
+        silent = any('gate silent' in r for _, r in reasons)
+        return [('start gate', 'FAIL' if silent else 'PASS',
+                 detail + (' -- the gate stopped reporting during the recording' if silent else ''))]
+    return [('start gate', 'NO DATA', g + ' -- start collection_gate.py for real data')]
+
+
 def judge_visibility(text):
     m = last_match(text, r'VISIBILITY: (.*)')
     if not m:
@@ -294,7 +310,11 @@ def main():
             next_progress += PROGRESS_EVERY_SEC
             n = len(list(samples_dir.glob('*.npz')))
             st = last_match(tail(run_dir / 'recorder.log', 40), r'(\d+ samples saved.*)')
-            print(f'  {now - t0:5.0f} s  {n} samples' + (f'  | {st.group(1)[:150]}' if st else ''), flush=True)
+            gt = re.search(r'; gate: ((?:on|NOT RUNNING|not heard)[^;]*)$', st.group(1)) if st else None
+            rest = (st.group(1)[:gt.start()] if gt else st.group(1)) if st else ''
+            # the gate state first, so it is never cut off; then the recorder status (shortened)
+            print(f'  {now - t0:5.0f} s  {n} samples' + (f'  | gate {gt.group(1)}' if gt else '') +
+                  (f'  | {rest[:120]}' if rest else ''), flush=True)
 
     print('\nStopping (waiting for the validator to write its report)...', flush=True)
     for name, p, log in procs:
@@ -324,7 +344,8 @@ def main():
         checks.append(('scene unchanged', 'PASS' if scene_changes == 0 else 'FAIL',
                        'obstacles constant during the recording' if scene_changes == 0 else
                        f'obstacles changed {scene_changes}x while recording: obstacle checks use the final scene'))
-    rec_status = last_match(rec_log, r'(Stopped\..*|\d+ samples saved, .*)')
+    rec_status = last_match(rec_log, r'(Stopped\..*|\d+ samples saved.*)')
+    checks += judge_gate(rec_status.group(1) if rec_status else '')
     if all(s == 'PASS' for _, s, _ in checks):
         overall = 'PASS'
     elif any(s == 'FAIL' for _, s, _ in checks):

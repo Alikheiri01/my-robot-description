@@ -12,6 +12,10 @@ everything that used to need its own terminal:
              heading_smoother.py is NOT started any more. The old launch file
              started it at this moment -- that is why applied_pose_relay.py
              found its lock taken and you had to pkill it.
+             + dataset_codes/collection_gate.py (2026-10-24): the START GATE.
+             Marks the times whose samples must not be saved (before the
+             pedestrian first walks, teleports, obstacle changes) on /dataset/gate;
+             dataset_recorder.py follows it.
     t=10 s   build_occupancy_grid_dynamic.py
     t=12 s   pedestrian_crop_view_dynamic.py          (crop_view:=false to skip)
     t=12 s   rviz2 with my_robot_description/rviz/thesis_view.rviz (the SOURCE file,
@@ -124,6 +128,7 @@ T_VIEWERS_START = 12.0
 
 HUNAV_CODES = '/home/ali/ros2_ws/src/my_robot_description/hunav_codes'
 AGENT_CONTROL_DIR = '/home/ali/ros2_ws/src/my_robot_description/agent_control'
+DATASET_CODES = '/home/ali/ros2_ws/src/my_robot_description/dataset_codes'
 # hunav_model_bridge_ctrl.py = the same bridge + live goal/speed control
 # (agent_control.py). To go back to the plain bridge use:
 #   LAUNCH_BRIDGE_SCRIPT = os.path.join(HUNAV_CODES, 'hunav_model_bridge.py')
@@ -376,8 +381,16 @@ def generate_launch_description():
         cmd=['python3', os.path.join(HUNAV_CODES, 'applied_pose_relay.py')],
         cwd=HUNAV_CODES, output='screen',
     )
+    # NEW (2026-10-24): the start gate. Closed until the pedestrian first walks; it
+    # then marks only teleports, obstacle changes and simulation restarts.
+    # dataset_recorder.py saves a sample only if its whole window was open.
+    collection_gate_process = ExecuteProcess(
+        cmd=['python3', os.path.join(DATASET_CODES, 'collection_gate.py')],
+        cwd=DATASET_CODES, output='screen',
+    )
     delayed_bridge_start = TimerAction(
-        period=T_BRIDGE_START, actions=[hunav_model_bridge_process, applied_pose_relay_process])
+        period=T_BRIDGE_START,
+        actions=[hunav_model_bridge_process, applied_pose_relay_process, collection_gate_process])
 
     # =========================================================================
     # Occupancy grid + viewers (used to be separate terminals). Run exactly as
