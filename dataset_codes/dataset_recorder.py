@@ -86,6 +86,20 @@ Sample layout (each is one .npz file):
                           the last ones can be -1 if their grids had not arrived)
   Nothing is dropped for visibility: training decides (proposed: anchor seen and
   >= 6 of 8 history steps seen).
+    gated               : bool, True = the start gate (collection_gate.py) was
+                          heard and the whole window was open (2026-10-24)
+
+START GATE (2026-10-24)
+------------------------------------------------------------------
+collection_gate.py publishes on /dataset/gate the CLOSED time intervals (not
+started yet, teleport, obstacles changed, simulation restart). A sample is saved
+only if its whole window (first history row .. last future row) touches none of
+them; otherwise it is dropped and counted as 'start gate: <reason>'. The recorder
+waits until the gate has reported GATE_LAG_SEC past the window's end (a scene
+change is marked a little into the past). If no gate is heard
+within GATE_WAIT_SEC of the first pedestrian pose, samples are saved UNGATED
+(gated=False, the status line and record_session.py say so). If the gate goes
+silent later, windows it cannot judge are dropped ('gate silent').
 
 REQUIRED: the full pipeline must be running (robot + depth pipeline +
 occupancy grid + HuNav driving the pedestrian + heading_smoother.py), with
@@ -116,6 +130,7 @@ from hunav_config import (
 )
 from time_sync import StampedPoseHistory, clocks_match, stamp_to_sec, wrap_angle
 from analyze_ped_visibility import crop_seen   # same "seen" rule as the analyzer and the viewer
+import json
 try:   # 2026-10-13: robot pose looked up at the same corrected time as the pedestrian (see hunav_config.py)
     from hunav_config import ROBOT_POSE_LOOKUP_OFFSET_SEC
 except ImportError:   # line not in hunav_config.py yet -> old behaviour
@@ -144,6 +159,48 @@ MIN_ANCHOR_SPACING_SEC = 0.3
 # Grids kept for judging visibility at history/future times (2026-10-24). Must cover the
 # whole sample window (history 3.5 s + future 6 s) plus the pose stream's delay.
 GRID_KEEP_SEC = 20.0
+# Start gate (2026-10-24, see collection_gate.py)
+GATE_TOPIC = '/dataset/gate'
+GATE_WAIT_SEC = 15.0       # sim s after the first pedestrian pose: no gate heard by then -> ungated
+GATE_STALE_SEC = 5.0       # sim s: gate reports this far behind the poses -> it is considered silent
+# A scene change is noticed up to ~2 s late (bridge and gate each read once a second), so the
+# gate closes from 2 s BEFORE it noticed. Wait until the gate has reported this far past a
+# window's end before saving it, so such a late-marked interval still catches the window.
+GATE_LAG_SEC = 2.5
+
+
+class GateTracker:
+    """Collects the closed intervals reported by collection_gate.py (simulation time)."""
+
+    def __init__(self):
+        self.heard = False
+        self.covered = None          # the gate has judged everything up to this time
+        self.intervals = {}          # (start, reason) -> end (None = still closed)
+        self.open = False            # the gate's state right now (for the status line)
+        self.reason = ''
+
+    def on_message(self, d):
+        now = d.get('now')
+        if now is None:
+            return
+        if self.covered is not None and now < self.covered - 1.0:      # simulation restarted
+            self.intervals.clear()
+        self.heard = True
+        self.covered = now
+        self.open = bool(d.get('open'))
+        self.reason = d.get('reason', '')
+        for a, b, r in d.get('closed', []):
+            self.intervals[(round(a, 3), r)] = b
+        for k in [k for k, b in self.intervals.items() if b is not None and b < now - 180.0]:
+            del self.intervals[k]
+
+    def closed_reason(self, t0, t1):
+        """Reason of a closed interval touching [t0, t1], or '' if none."""
+        for (a, r), b in self.intervals.items():
+            end = b if b is not None else float('inf')
+            if a <= t1 and end >= t0:
+                return r
+        return ''
 
 
 def world_pose_to_base_link(x, y, yaw, robot_pos, robot_yaw):
@@ -172,7 +229,7 @@ class AlignedSampler:
 
     def __init__(self, crop_fn, to_local_fn, sink, lookup_offset=POSE_LOOKUP_OFFSET_SEC,
                  history_len=TRAJECTORY_HISTORY_LENGTH, future_len=FUTURE_HORIZON_LENGTH,
-                 period=DATASET_SAMPLE_PERIOD_SEC, max_gap=MAX_POSE_GAP_SEC, log=None):
+                 period=DATASET_SAMPLE_PERIOD_SEC, max_gap=MAX_POSE_GAP_SEC, log=None, gate=None):
         self.crop_fn = crop_fn
         self.to_local_fn = to_local_fn
         self.sink = sink
@@ -180,6 +237,10 @@ class AlignedSampler:
         self.H, self.F, self.P = history_len, future_len, period
         self.max_gap = max_gap
         self.log = log or (lambda level, msg: None)
+        self.gate = gate               # GateTracker, or None = no gate at all (tests)
+        self.t_first_ped = None
+        self.ungated = False
+        self.n_gate_dropped = 0
 
         self.ped = StampedPoseHistory(max_age_sec=POSE_HISTORY_KEEP_SEC)
         self.odom = StampedPoseHistory(max_age_sec=POSE_HISTORY_KEEP_SEC)
@@ -200,6 +261,8 @@ class AlignedSampler:
         self.odom.add(t, x, y, yaw)
 
     def on_ped(self, t, x, y, yaw):
+        if self.t_first_ped is None:
+            self.t_first_ped = t
         self.ped.add(t, x, y, yaw)
         self._advance()
 
@@ -284,7 +347,14 @@ class AlignedSampler:
                 if not self._cut_crop(a):
                     continue
             if latest >= a['T'] + self.F * self.P - 1e-9:
-                self._emit(a, latest)
+                verdict = self._gate_check(a, latest)
+                if verdict == 'wait':
+                    remaining.append(a)
+                elif verdict:
+                    self.drops[f'start gate: {verdict}'] += 1
+                    self.n_gate_dropped += 1
+                else:
+                    self._emit(a, latest)
             else:
                 remaining.append(a)
         self.pending = remaining
@@ -303,6 +373,26 @@ class AlignedSampler:
         a['ped'] = (x, y, yaw)
         a['grid'] = None
         return True
+
+    def _gate_check(self, a, latest):
+        """'' = save, 'wait' = gate has not reported that far yet, else the reason to drop."""
+        g = self.gate
+        if g is None:
+            return ''
+        t0, t1 = a['T'] - (self.H - 1) * self.P, a['T'] + self.F * self.P
+        if not g.heard:
+            if self.t_first_ped is not None and latest - self.t_first_ped < GATE_WAIT_SEC:
+                return 'wait'
+            if not self.ungated:
+                self.ungated = True
+                self.log('warn', 'no start gate heard on /dataset/gate: saving samples UNGATED '
+                                 '(start collection_gate.py for real data)')
+            return ''
+        if g.covered < t1 + GATE_LAG_SEC:
+            if latest - g.covered > GATE_STALE_SEC:
+                return 'gate silent (is collection_gate.py running?)'
+            return 'wait'
+        return g.closed_reason(t0, t1)
 
     def _seen_at(self, t):
         """1 / 0: was the pedestrian's spot known in the grid nearest time t (the same rule as the
@@ -375,14 +465,22 @@ class AlignedSampler:
             'ped_seen_anchor': np.int8(seen_anchor),
             'ped_seen_history': seen_h,
             'ped_seen_future': seen_f,
+            'gated': bool(self.gate is not None and self.gate.heard and not self.ungated),
         })
         self.n_saved += 1
 
     def status(self):
         drops = ', '.join(f'{n}x {r}' for r, n in self.drops.most_common(4)) or 'none'
         seen = f' ({100 * self.n_seen_anchor / self.n_saved:.0f}% with the pedestrian seen)' if self.n_saved else ''
+        if self.gate is None or (not self.gate.heard and not self.ungated):
+            gate = 'gate: not heard yet'
+        elif self.ungated:
+            gate = 'gate: NOT RUNNING (samples are ungated)'
+        else:
+            state = 'OPEN' if self.gate.open else f'CLOSED: {self.gate.reason}'
+            gate = f'gate: on ({state}), {self.n_gate_dropped} samples dropped by it'
         return (f'{self.n_saved} samples saved{seen}, {len(self.pending)} waiting for future poses, '
-                f'{self.n_anchors} anchors started; dropped: {drops}')
+                f'{self.n_anchors} anchors started; dropped: {drops}; {gate}')
 
 
 # =============================================================================
@@ -394,6 +492,7 @@ def run_node(output_dir: Path):
     from rclpy.qos import qos_profile_sensor_data
     from nav_msgs.msg import OccupancyGrid, Odometry
     from geometry_msgs.msg import PoseArray
+    from std_msgs.msg import String
 
     import build_occupancy_grid as bog
     from extract_pedestrian_crop import extract_pedestrian_crop, base_to_local
@@ -405,9 +504,11 @@ def run_node(output_dir: Path):
             self.output_dir = output_dir
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.gate = GateTracker()
             self.sampler = AlignedSampler(
                 extract_pedestrian_crop, base_to_local, self._write,
-                log=lambda level, msg: getattr(self.get_logger(), level)(msg, throttle_duration_sec=5.0))
+                log=self._log, gate=self.gate)
+            self.create_subscription(String, GATE_TOPIC, self._gate_cb, 10)
 
             self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
             self.create_subscription(PoseArray, '/people_smoothed_pose', self._ped_cb, 10)
@@ -420,6 +521,21 @@ def run_node(output_dir: Path):
                 f'(run id {self.run_id}). history={H}, future={F}, period={P:.2f} s of SIMULATION '
                 f'time, anchor = grid stamp {POSE_LOOKUP_OFFSET_SEC:+.2f} s. First sample after '
                 f'~{(H - 1) * P + F * P:.1f} s of simulation time.')
+
+        def _log(self, level, msg):
+            # one call line per severity (rclpy refuses a severity change on the same line)
+            if level == 'error':
+                self.get_logger().error(msg, throttle_duration_sec=5.0)
+            elif level == 'warn':
+                self.get_logger().warn(msg, throttle_duration_sec=5.0)
+            else:
+                self.get_logger().info(msg, throttle_duration_sec=5.0)
+
+        def _gate_cb(self, msg):
+            try:
+                self.gate.on_message(json.loads(msg.data))
+            except (ValueError, TypeError, KeyError) as e:
+                self.get_logger().warn(f'bad /dataset/gate message: {e}', throttle_duration_sec=10.0)
 
         def _odom_cb(self, msg):
             p = msg.pose.pose.position
