@@ -243,9 +243,22 @@ def view(samples_dir: Path, start_index: int = 0):
                              f'grid t={float(data["grid_stamp_sim"]):.2f}s  '
                              f'window {float(data["history_times"][0]):.1f}..{float(data["future_times"][-1]):.1f}s')
 
+        # 2026-10-20: everything OUTSIDE the crop is painted pale pink and the crop gets a
+        # dashed border. The axes grow to fit history/future points that lie beyond the
+        # crop (history often reaches 3-4 m behind, the crop only 2 m); before, that area
+        # was plain white and looked exactly like free space.
+        ax.set_facecolor('#f7dede')
         im = ax.imshow(
             _to_display(crop), cmap=cmap, norm=norm, origin='lower',
             extent=[-CROP_BEHIND, CROP_FORWARD, -CROP_SIDE, CROP_SIDE])
+        from matplotlib.patches import Rectangle
+        ax.add_patch(Rectangle((-CROP_BEHIND, -CROP_SIDE), CROP_BEHIND + CROP_FORWARD, 2 * CROP_SIDE,
+                               fill=False, ls='--', lw=1.2, ec='#c03030', label='crop border (pink = no data)'))
+        try:
+            from analyze_ped_visibility import crop_seen
+            seen_txt = '  PED SEEN' if crop_seen(crop)[0] else '  PED NOT SEEN (anchor in grey)'
+        except Exception:
+            seen_txt = ''
         # BoundaryNorm has no inverse mapping, so matplotlib's mouse-hover
         # cursor-data tooltip crashes trying to compute it -- same cosmetic
         # issue already suppressed in pedestrian_crop_view_dynamic.py.
@@ -262,7 +275,7 @@ def view(samples_dir: Path, start_index: int = 0):
         status = 'CLEAN' if not issues else f'{len(issues)} ISSUE(S)'
         color = 'green' if not issues else 'red'
         ax.set_title(
-            f'[{state["idx"] + 1}/{len(files)}] {f.name}  --  {status}{time_info}\n'
+            f'[{state["idx"] + 1}/{len(files)}] {f.name}  --  {status}{seen_txt}{time_info}\n'
             f'n=next  p=prev  r=random  q=quit', fontsize=9, color=color)
 
         print(f'\n{f.name}: {"clean" if not issues else issues}')

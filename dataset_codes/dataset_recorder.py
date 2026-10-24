@@ -76,6 +76,16 @@ Sample layout (each is one .npz file):
     robot_pose_odom     : float64 (3,) robot x, y, yaw (odom frame) at t_g
     ped_anchor_odom     : float64 (3,) pedestrian x, y, yaw (odom) at T
     max_pose_gap_sec    : float, largest spacing of pose samples in the window
+  NEW 2026-10-24 (could the ROBOT see the pedestrian? see analyze_ped_visibility.py):
+    ped_seen_anchor     : int8, 1 = the pedestrian's spot in this sample's crop is
+                          known (camera saw it), 0 = grey (out of view / hidden)
+    ped_seen_history    : int8 (H,) the same for every history row, judged on the
+                          grid nearest that time; -1 = no grid within
+                          MAX_GRID_MISMATCH_SEC. Last entry = ped_seen_anchor.
+    ped_seen_future     : int8 (F,) the same for the future rows (information only;
+                          the last ones can be -1 if their grids had not arrived)
+  Nothing is dropped for visibility: training decides (proposed: anchor seen and
+  >= 6 of 8 history steps seen).
 
 REQUIRED: the full pipeline must be running (robot + depth pipeline +
 occupancy grid + HuNav driving the pedestrian + heading_smoother.py), with
@@ -87,7 +97,7 @@ stamps (a wall-clock timer is used only for the status line).
 import math
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +115,7 @@ from hunav_config import (
     TRAJECTORY_HISTORY_LENGTH, FUTURE_HORIZON_LENGTH, DATASET_SAMPLE_PERIOD_SEC,
 )
 from time_sync import StampedPoseHistory, clocks_match, stamp_to_sec, wrap_angle
+from analyze_ped_visibility import crop_seen   # same "seen" rule as the analyzer and the viewer
 try:   # 2026-10-13: robot pose looked up at the same corrected time as the pedestrian (see hunav_config.py)
     from hunav_config import ROBOT_POSE_LOOKUP_OFFSET_SEC
 except ImportError:   # line not in hunav_config.py yet -> old behaviour
@@ -130,6 +141,9 @@ MAX_PENDING = 100
 # unevenly two consecutive targets can pick grids only ~0.1 s apart (seen: 0.03-0.07 s).
 # Such a candidate is skipped and counted instead. 0.3 s = 60% of the sample period.
 MIN_ANCHOR_SPACING_SEC = 0.3
+# Grids kept for judging visibility at history/future times (2026-10-24). Must cover the
+# whole sample window (history 3.5 s + future 6 s) plus the pose stream's delay.
+GRID_KEEP_SEC = 20.0
 
 
 def world_pose_to_base_link(x, y, yaw, robot_pos, robot_yaw):
@@ -174,9 +188,12 @@ class AlignedSampler:
         self.next_target = None    # next lattice time (in anchor time T)
         self.last_used_tg = None
         self.last_anchor_T = None
+        self.grids = deque()       # (t_g, T, loader) of recent grids, for visibility flags
+        self._grid_cache = {}      # t_g -> loaded array (only grids actually used)
         self.drops = Counter()
         self.n_saved = 0
         self.n_anchors = 0
+        self.n_seen_anchor = 0
 
     # --- events -------------------------------------------------------------
     def on_odom(self, t, x, y, yaw):
@@ -205,6 +222,9 @@ class AlignedSampler:
 
         T_new = t_g + self.off
         cur = (t_g, T_new, loader)
+        self.grids.append(cur)
+        while self.grids and self.grids[0][1] < T_new - GRID_KEEP_SEC:
+            self._grid_cache.pop(self.grids.popleft()[0], None)
         if self.next_target is None:
             self.next_target = T_new
         elif T_new - self.next_target > LATTICE_RESTART_SEC:
@@ -234,6 +254,8 @@ class AlignedSampler:
         self.next_target = None
         self.last_used_tg = None
         self.last_anchor_T = None
+        self.grids.clear()
+        self._grid_cache.clear()
 
     def _start_anchor(self, cand):
         t_g, T, loader = cand
@@ -282,6 +304,25 @@ class AlignedSampler:
         a['grid'] = None
         return True
 
+    def _seen_at(self, t):
+        """1 / 0: was the pedestrian's spot known in the grid nearest time t (the same rule as the
+        crop), -1: no grid near t, or no robot / pedestrian pose for it."""
+        if not self.grids:
+            return -1
+        t_g, T, loader = min(self.grids, key=lambda g: abs(g[1] - t))
+        if abs(T - t) > MAX_GRID_MISMATCH_SEC:
+            return -1
+        robot = self.odom.at(t_g + ROBOT_POSE_LOOKUP_OFFSET_SEC, max_hold=ODOM_MAX_HOLD_SEC)
+        p = self.ped.at(T)
+        yaw = self.ped.step_yaw_at(T)
+        if robot is None or p is None or yaw is None:
+            return -1
+        grid = self._grid_cache.get(t_g)
+        if grid is None:
+            grid = self._grid_cache[t_g] = loader()
+        bx, by, byaw = world_pose_to_base_link(p[0], p[1], yaw, (robot[0], robot[1]), robot[2])
+        return 1 if crop_seen(self.crop_fn(grid, bx, by, byaw))[0] else 0
+
     def _emit(self, a, latest):
         T, P, H, F = a['T'], self.P, self.H, self.F
         t0, t1 = T - (H - 1) * P, T + F * P
@@ -310,6 +351,10 @@ class AlignedSampler:
         if not (np.isfinite(history).all() and np.isfinite(future).all()):
             self.drops['non-finite pose values'] += 1
             return
+        seen_anchor = 1 if crop_seen(a['crop'])[0] else 0
+        seen_h = np.array([self._seen_at(t) for t in times_h[:-1]] + [seen_anchor], dtype=np.int8)
+        seen_f = np.array([self._seen_at(t) for t in times_f], dtype=np.int8)
+        self.n_seen_anchor += seen_anchor
 
         self.sink({
             'trajectory_history': history,
@@ -327,12 +372,16 @@ class AlignedSampler:
             'robot_pose_odom': np.array(a['robot'], dtype=np.float64),
             'ped_anchor_odom': np.array(a['ped'], dtype=np.float64),
             'max_pose_gap_sec': float(gap),
+            'ped_seen_anchor': np.int8(seen_anchor),
+            'ped_seen_history': seen_h,
+            'ped_seen_future': seen_f,
         })
         self.n_saved += 1
 
     def status(self):
         drops = ', '.join(f'{n}x {r}' for r, n in self.drops.most_common(4)) or 'none'
-        return (f'{self.n_saved} samples saved, {len(self.pending)} waiting for future poses, '
+        seen = f' ({100 * self.n_seen_anchor / self.n_saved:.0f}% with the pedestrian seen)' if self.n_saved else ''
+        return (f'{self.n_saved} samples saved{seen}, {len(self.pending)} waiting for future poses, '
                 f'{self.n_anchors} anchors started; dropped: {drops}')
 
 
