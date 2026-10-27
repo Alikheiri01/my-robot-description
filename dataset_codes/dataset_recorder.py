@@ -88,6 +88,41 @@ Sample layout (each is one .npz file):
   >= 6 of 8 history steps seen).
     gated               : bool, True = the start gate (collection_gate.py) was
                           heard and the whole window was open (2026-10-24)
+  NEW 2026-10-27 (robot track + episodes; the schema string stays 'time_aligned_v2',
+  fields are only added, nothing old changed):
+    robot_history_odom  : float64 (H, 3) robot x, y, yaw (odom frame) at each history time
+                          (history_times). The last row is the robot at T
+                          (robot_pose_odom is the robot at the grid stamp t_g, ~0.05 s earlier).
+    robot_future_odom   : float64 (F, 3) robot x, y, yaw at each future time (future_times).
+                          NOT a network input (the robot's future is not known when
+                          predicting); kept for analysis: did the pedestrian react to the
+                          robot, how close did they get, closed-loop evaluation later.
+                          A sample is never saved with a missing robot pose (no NaN): it is
+                          dropped instead ('robot pose dropout ...'), like the pedestrian.
+    episode_id          : str, the episode the anchor T belongs to ('' = no episode runner).
+                          Split train/test by it.
+    episode_time_sec    : float, T minus the episode's start time (-1.0 if no episode).
+
+EPISODES (2026-10-27)
+------------------------------------------------------------------
+An episode runner (written later) publishes the current episode id as a plain
+std_msgs/String on /dataset/episode (it may repeat it, e.g. once a second; only a
+CHANGE counts). The recorder notes the simulation time of each change (the newest
+pedestrian pose time when the message arrives) and
+  * labels each sample with the episode its anchor T falls in;
+  * DROPS a sample whose window (first history row .. last future row, +-EPISODE_MARGIN_SEC)
+    contains an episode change: such a window mixes two episodes (reset, new layout).
+Everything else about an episode (scenario type, layout, parameters, event time) lives
+in one metadata file per episode written by the runner. Without a runner nothing
+changes: episode_id is '' and nothing is dropped for episodes.
+You can test it by hand:  ros2 topic pub --once /dataset/episode std_msgs/String "data: 'ep_001'"
+
+RUN INFO (2026-10-27)
+------------------------------------------------------------------
+At start-up the recorder writes recorder_info.json next to the samples folder: every
+constant it uses (this file, hunav_config.py, build_occupancy_grid.py,
+extract_pedestrian_crop.py). A dataset then always says how it was made (crop size,
+resolution, offsets, period ...), which the parameter study needs.
 
 START GATE (2026-10-24)
 ------------------------------------------------------------------
@@ -161,6 +196,11 @@ MIN_ANCHOR_SPACING_SEC = 0.3
 GRID_KEEP_SEC = 20.0
 # Start gate (2026-10-24, see collection_gate.py)
 GATE_TOPIC = '/dataset/gate'
+EPISODE_TOPIC = '/dataset/episode'   # std_msgs/String: the current episode id (published by the episode runner)
+EPISODE_MARGIN_SEC = 0.5   # s: an episode change this close to a window also drops it (message delay)
+ROBOT_MAX_GAP_SEC = 0.5    # s: largest allowed hole in the robot pose stream inside a window (normal: 0.02 s)
+ROBOT_WAIT_SEC = 1.0       # s: wait this long (pedestrian time) for the robot pose to reach the window end
+RECORDER_VERSION = '2026-10-27'
 GATE_WAIT_SEC = 15.0       # sim s after the first pedestrian pose: no gate heard by then -> ungated
 GATE_STALE_SEC = 5.0       # sim s: gate reports this far behind the poses -> it is considered silent
 # A scene change is noticed up to ~2 s late (bridge and gate each read once a second), so the
@@ -239,6 +279,9 @@ class AlignedSampler:
         self.log = log or (lambda level, msg: None)
         self.gate = gate               # GateTracker, or None = no gate at all (tests)
         self.t_first_ped = None
+        self.episode_id = ''           # the current episode (from /dataset/episode)
+        self.initial_episode = ''      # the episode before the first recorded change
+        self.episode_changes = []      # [(sim time of the change, new id)], oldest first
         self.ungated = False
         self.n_gate_dropped = 0
 
@@ -259,6 +302,33 @@ class AlignedSampler:
     # --- events -------------------------------------------------------------
     def on_odom(self, t, x, y, yaw):
         self.odom.add(t, x, y, yaw)
+
+    def on_episode(self, eid, t=None):
+        """A message on /dataset/episode. Only a change of the id counts. t = simulation time of
+        the change (default: the newest pedestrian pose time, i.e. 'now' on the sim clock)."""
+        eid = (eid or '').strip().replace(';', ',')
+        if eid == self.episode_id:
+            return
+        if t is None:
+            t = self.ped.latest_time()
+        self.episode_id = eid
+        if t is None:                  # nothing recorded yet: this is the starting episode
+            self.initial_episode = eid
+            return
+        self.episode_changes.append((t, eid))
+        self.log('info', f'episode changed to {eid!r} at {t:.2f} s (windows around it are dropped)')
+
+    def episode_at(self, t):
+        """(id, start time or None) of the episode simulation time t falls in."""
+        eid, start = self.initial_episode, None
+        for tc, e in self.episode_changes:
+            if tc > t:
+                break
+            eid, start = e, tc
+        return eid, start
+
+    def episode_change_in(self, t0, t1):
+        return any(t0 <= tc <= t1 for tc, _ in self.episode_changes)
 
     def on_ped(self, t, x, y, yaw):
         if self.t_first_ped is None:
@@ -319,6 +389,8 @@ class AlignedSampler:
         self.last_anchor_T = None
         self.grids.clear()
         self._grid_cache.clear()
+        self.initial_episode = self.episode_id      # old change times belong to the old clock
+        self.episode_changes = []
 
     def _start_anchor(self, cand):
         t_g, T, loader = cand
@@ -346,7 +418,11 @@ class AlignedSampler:
                     continue
                 if not self._cut_crop(a):
                     continue
-            if latest >= a['T'] + self.F * self.P - 1e-9:
+            t_end = a['T'] + self.F * self.P
+            odom_latest = self.odom.latest_time()
+            robot_ready = (odom_latest is not None and odom_latest >= t_end - 1e-9) or \
+                latest >= t_end + ROBOT_WAIT_SEC
+            if latest >= t_end - 1e-9 and robot_ready:
                 verdict = self._gate_check(a, latest)
                 if verdict == 'wait':
                     remaining.append(a)
@@ -424,6 +500,12 @@ class AlignedSampler:
         if gap > self.max_gap:
             self.drops['pose dropout inside the sample window'] += 1
             return
+        if self.episode_change_in(t0 - EPISODE_MARGIN_SEC, t1 + EPISODE_MARGIN_SEC):
+            self.drops['episode changed inside the window'] += 1
+            return
+        if self.odom.max_gap(t0, t1) > ROBOT_MAX_GAP_SEC:
+            self.drops['robot pose dropout inside the sample window'] += 1
+            return
 
         ax, ay, ayaw = a['ped']
 
@@ -441,6 +523,13 @@ class AlignedSampler:
         if not (np.isfinite(history).all() and np.isfinite(future).all()):
             self.drops['non-finite pose values'] += 1
             return
+        robot_rows = [self.odom.at(float(t), max_hold=ODOM_MAX_HOLD_SEC) for t in np.concatenate([times_h, times_f])]
+        if any(r is None for r in robot_rows):
+            self.drops['robot pose dropout: no robot pose for a history/future step'] += 1
+            return
+        robot_rows = np.array(robot_rows, dtype=np.float64)
+        robot_hist, robot_fut = robot_rows[:H], robot_rows[H:]
+        eid, e_start = self.episode_at(T)
         seen_anchor = 1 if crop_seen(a['crop'])[0] else 0
         seen_h = np.array([self._seen_at(t) for t in times_h[:-1]] + [seen_anchor], dtype=np.int8)
         seen_f = np.array([self._seen_at(t) for t in times_f], dtype=np.int8)
@@ -466,6 +555,10 @@ class AlignedSampler:
             'ped_seen_history': seen_h,
             'ped_seen_future': seen_f,
             'gated': bool(self.gate is not None and self.gate.heard and not self.ungated),
+            'robot_history_odom': robot_hist,
+            'robot_future_odom': robot_fut,
+            'episode_id': eid,
+            'episode_time_sec': float(T - e_start) if (eid and e_start is not None) else -1.0,
         })
         self.n_saved += 1
 
@@ -479,8 +572,32 @@ class AlignedSampler:
         else:
             state = 'OPEN' if self.gate.open else f'CLOSED: {self.gate.reason}'
             gate = f'gate: on ({state}), {self.n_gate_dropped} samples dropped by it'
+        ep = f'episode: {self.episode_id!r} ({len(self.episode_changes)} changes)' if \
+            (self.episode_id or self.episode_changes) else 'episode: none'
+        # the gate part must stay LAST (record_session.py reads it up to the end of the line)
         return (f'{self.n_saved} samples saved{seen}, {len(self.pending)} waiting for future poses, '
-                f'{self.n_anchors} anchors started; dropped: {drops}; {gate}')
+                f'{self.n_anchors} anchors started; dropped: {drops}; {ep}; {gate}')
+
+
+def collect_constants(modules):
+    """{module: {NAME: value}} of every UPPER_CASE number / string / bool / short tuple in each module."""
+    out = {}
+    for name, mod in modules.items():
+        if mod is None:
+            continue
+        vals = {}
+        for k in dir(mod):
+            if not k.isupper() or k.startswith('_'):
+                continue
+            v = getattr(mod, k)
+            if isinstance(v, (bool, int, float, str)):
+                vals[k] = v
+            elif isinstance(v, (tuple, list)) and len(v) <= 20 and all(isinstance(e, (bool, int, float, str)) for e in v):
+                vals[k] = list(v)
+            elif isinstance(v, Path):
+                vals[k] = str(v)
+        out[name] = vals
+    return out
 
 
 # =============================================================================
@@ -509,11 +626,13 @@ def run_node(output_dir: Path):
                 extract_pedestrian_crop, base_to_local, self._write,
                 log=self._log, gate=self.gate)
             self.create_subscription(String, GATE_TOPIC, self._gate_cb, 10)
+            self.create_subscription(String, EPISODE_TOPIC, self._episode_cb, 10)
 
             self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
             self.create_subscription(PoseArray, '/people_smoothed_pose', self._ped_cb, 10)
             self.create_subscription(OccupancyGrid, '/occupancy_grid/base', self._grid_cb, 10)
             self.create_timer(10.0, self._status)   # wall-clock timer: status line only
+            self._write_info()
 
             H, F, P = TRAJECTORY_HISTORY_LENGTH, FUTURE_HORIZON_LENGTH, DATASET_SAMPLE_PERIOD_SEC
             self.get_logger().info(
@@ -536,6 +655,23 @@ def run_node(output_dir: Path):
                 self.gate.on_message(json.loads(msg.data))
             except (ValueError, TypeError, KeyError) as e:
                 self.get_logger().warn(f'bad /dataset/gate message: {e}', throttle_duration_sec=10.0)
+
+        def _episode_cb(self, msg):
+            self.sampler.on_episode(msg.data)
+
+        def _write_info(self):
+            info_dir = self.output_dir.parent if self.output_dir.name == 'samples' else self.output_dir
+            info = {'recorder_version': RECORDER_VERSION, 'run_id': self.run_id,
+                    'started_wall': datetime.now().isoformat(timespec='seconds'),
+                    'samples_dir': str(self.output_dir),
+                    'constants': collect_constants({'dataset_recorder': sys.modules[__name__],
+                                                    'hunav_config': sys.modules.get('hunav_config'),
+                                                    'build_occupancy_grid': bog,
+                                                    'extract_pedestrian_crop': sys.modules.get('extract_pedestrian_crop')})}
+            try:
+                (info_dir / 'recorder_info.json').write_text(json.dumps(info, indent=2, default=str))
+            except OSError as e:
+                self.get_logger().warn(f'could not write recorder_info.json: {e}')
 
         def _odom_cb(self, msg):
             p = msg.pose.pose.position
