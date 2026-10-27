@@ -34,6 +34,12 @@ PASS criteria (the ones we agreed on 2026-10-04):
                (analyze_ped_visibility.py, if present; 2026-10-24)
     start gate collection_gate.py was running, so every sample's window was checked
                (NO DATA = no gate: samples are ungated, fine for tests, not for real data)
+    sample fields  the robot track in every sample agrees with the robot pose of the
+               other samples, and no sample window crosses an episode change
+               (analyze_sample_fields.py, if present; 2026-10-27)
+
+RUN INFO (2026-10-27): the recorder writes recorder_info.json into the run folder (every
+constant used to make the samples); run_info.json (this script) holds the config snapshot.
 
 OBSTACLES (2026-10-06): the bridge writes the obstacles it uses to
 agent_control/current_obstacles.yaml. This script copies it into the run
@@ -61,6 +67,7 @@ LEFTOVER = THIS_DIR / 'analyze_crop_leftover.py'
 SMOOTH = THIS_DIR / 'analyze_walk_smoothness.py'
 CLEAR = THIS_DIR / 'analyze_obstacle_clearance.py'
 VIS = THIS_DIR / 'analyze_ped_visibility.py'
+FIELDS = THIS_DIR / 'analyze_sample_fields.py'
 VALIDATOR = HUNAV_DIR / 'validate_time_alignment.py'
 CURRENT_OBSTACLES = THIS_DIR.parent / 'agent_control' / 'current_obstacles.yaml'
 
@@ -132,7 +139,8 @@ def config_snapshot():
         import hunav_config as c
         return {k: getattr(c, k, None) for k in (
             'POSE_LOOKUP_OFFSET_SEC', 'PEDESTRIAN_EXCLUSION_RADIUS', 'PAUSE_PHASE_ENABLED',
-            'TRAJECTORY_HISTORY_LENGTH', 'FUTURE_HORIZON_LENGTH', 'DATASET_SAMPLE_PERIOD_SEC')}
+            'TRAJECTORY_HISTORY_LENGTH', 'FUTURE_HORIZON_LENGTH', 'DATASET_SAMPLE_PERIOD_SEC',
+            'ROBOT_POSE_LOOKUP_OFFSET_SEC')}
     except Exception as e:                       # report, never block a recording
         return {'error': f'could not read hunav_config.py: {e}'}
 
@@ -237,6 +245,13 @@ def judge_visibility(text):
     return [('pedestrian visibility', 'FAIL' if 'CONTRADICTIONS' in v else 'PASS', v)]
 
 
+def judge_fields(text):
+    m = last_match(text, r'SAMPLE FIELDS: (PASS|FAIL|NO DATA): (.*)')
+    if not m:
+        return [('sample fields', 'NO DATA', (text.splitlines() or ['no output'])[-1])]
+    return [('sample fields', m.group(1), m.group(2).strip())]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--duration', type=float, default=None, help='stop after this many seconds (wall clock)')
@@ -338,8 +353,9 @@ def main():
     sm_out = run_tool([SMOOTH, samples_dir], THIS_DIR) if SMOOTH.exists() else ''
     cl_out = run_tool([CLEAR, samples_dir], THIS_DIR) if CLEAR.exists() else ''
     vi_out = run_tool([VIS, samples_dir], THIS_DIR) if VIS.exists() else ''
+    fi_out = run_tool([FIELDS, samples_dir], THIS_DIR) if FIELDS.exists() else ''
 
-    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else []) + (judge_visibility(vi_out) if vi_out else [])
+    checks = ([] if args.no_validate else judge_validator(val_report)) + judge_inspector(ins_out) + judge_leftover(lo_out) + (judge_smoothness(sm_out) if sm_out else []) + (judge_clearance(cl_out) if cl_out else []) + (judge_visibility(vi_out) if vi_out else []) + (judge_fields(fi_out) if fi_out else [])
     if (run_dir / 'obstacles.yaml').exists():
         checks.append(('scene unchanged', 'PASS' if scene_changes == 0 else 'FAIL',
                        'obstacles constant during the recording' if scene_changes == 0 else
@@ -367,7 +383,8 @@ def main():
                         '---- analyze_crop_leftover.py ----\n' + lo_out,
                         '---- analyze_walk_smoothness.py ----\n' + (sm_out or '(not found)'),
                         '---- analyze_obstacle_clearance.py ----\n' + (cl_out or '(not found)'),
-                        '---- analyze_ped_visibility.py ----\n' + (vi_out or '(not found)')])
+                        '---- analyze_ped_visibility.py ----\n' + (vi_out or '(not found)'),
+                        '---- analyze_sample_fields.py ----\n' + (fi_out or '(not found)')])
     (run_dir / 'report.txt').write_text(full + '\n')
     info['overall'] = overall
     info['checks'] = checks
