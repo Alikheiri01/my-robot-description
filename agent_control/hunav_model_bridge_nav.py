@@ -44,6 +44,26 @@ UNCHANGED (agent_control.py works exactly as before)
 The goal cycling (cyclic_goals of the yaml) is now done by this bridge, since
 HuNav only ever gets one point at a time.
 
+EPISODE MODE (2026-11-01, for mvp_collection/episode_runner.py; the old file is
+hunav_model_bridge_nav_old.py). Everything above is unchanged; three additions:
+  subscribes  /hunav/reset_pose    geometry_msgs/Pose, WORLD frame: TELEPORT the pedestrian
+                  there, standing still (goal = that point, no cycling, speed 0). The actor
+                  jumps at once (cmd_pose) and HuNav continues from the new state.
+              /hunav/episode_goal  std_msgs/String, JSON, WORLD frame:
+                  {"id": "...", "goal": [x, y], "speed": v,
+                   "path": [[x, y], ...] or null, "stop_slowdown_m": Ds or null}
+                  ONE goal, never cycled (the pedestrian stops there and stays).
+                  path given -> PATH MODE: HuNav's goal is a point PATH_LOOKAHEAD_M ahead
+                  along the path (episode_nav.PathFollower); it is never reached, so there
+                  is no hold at waypoints (E arcs). Otherwise the route planner as usual.
+                  stop_slowdown_m (scenario C) -> designed slowdown v0*sqrt(d/Ds) in the last Ds.
+  publishes   /hunav/episode_state std_msgs/String, JSON, every HuNav step:
+                  {"id", "mode": idle|route|path, "x", "y" (world), "remaining_m", "speed_cmd"}
+                  remaining_m = metres still to walk along the route / path (the runner ends
+                  the episode 1.5 m before the goal from it).
+A message on /hunav/agent_goals (agent_control.py, the goals shell function) leaves
+episode mode and behaves exactly as before (yaml cycling).
+
 NEEDS the local HuNav patch (patch_hunav_agent_manager.py), as before.
 
 Lives in my_robot_description/agent_control/, next to world_obstacles.py and
@@ -64,6 +84,7 @@ sys.path.insert(0, os.path.join(_HERE, '..', 'hunav_codes'))
 from world_obstacles import (CLEARANCE_M, MIN_CLEARANCE_M, OBSTACLE_RANGE_M,  # noqa: E402
                              RouteFollower, closest_points, load_obstacles,
                              min_distance)
+from episode_nav import PathFollower, route_remaining, stop_speed  # noqa: E402
 
 DEFAULT_OBSTACLES = 'gazebo'
 CURRENT_FILE = os.path.join(_HERE, 'current_obstacles.yaml')
@@ -71,13 +92,16 @@ RELOAD_CHECK_SEC = 1.0
 GAZEBO_POLL_SEC = 1.0
 MARKER_PERIOD_SEC = 0.5
 SAME_POINT_M = 1e-3
+PATH_LOOKAHEAD_M = 1.5        # path mode: HuNav's goal is this far ahead along the path
+CARROT_RESEND_M = 0.25        # path mode: send a new carrot when it moved this far
 
 
 def main():
     import argparse
     import rclpy
     from geometry_msgs.msg import Point, Pose, PoseArray
-    from std_msgs.msg import Float32
+    import json
+    from std_msgs.msg import Float32, String
     from visualization_msgs.msg import Marker, MarkerArray
     from hunav_config import ensure_single_instance, world_to_odom
     from hunav_model_bridge import HunavModelBridge
@@ -107,6 +131,15 @@ def main():
             self.marker_pub = self.create_publisher(MarkerArray, '/hunav/nav_markers', 10)
             self.create_subscription(PoseArray, '/hunav/agent_goals', self._goals_cb, 10)
             self.create_subscription(Float32, '/hunav/agent_speed', self._speed_cb, 10)
+            # episode mode (2026-11-01)
+            self.yaml_cyclic = True
+            self.episode = None         # dict from /hunav/episode_goal, None = classic mode
+            self.path = None            # PathFollower in path mode
+            self.remaining = None
+            self._pending_reset = None  # (x, y, yaw) world, applied at the next tick
+            self.create_subscription(Pose, '/hunav/reset_pose', self._reset_cb, 10)
+            self.create_subscription(String, '/hunav/episode_goal', self._episode_cb, 10)
+            self.state_pub = self.create_publisher(String, '/hunav/episode_state', 10)
             self.create_timer(MARKER_PERIOD_SEC, self._draw)
             if self.from_gazebo:
                 self.get_logger().info('Obstacles: read live from Gazebo (add/move/delete them in the Gazebo GUI).')
@@ -208,7 +241,7 @@ def main():
             if ok and self.current_agents.agents:
                 a = self.current_agents.agents[0]          # single agent, like the rest of the project
                 self.yaml_goals = [(g.position.x, g.position.y) for g in a.goals]
-                self.cyclic = bool(a.cyclic_goals)
+                self.cyclic = self.yaml_cyclic = bool(a.cyclic_goals)
                 self.reach = float(a.goal_radius) + 0.1    # HuNav's own "goal reached" distance
                 quiet = lambda lvl, m: self._log('error', m) if lvl == 'error' else self.get_logger().debug(m)
                 self.cmd = GoalCommander(self.yaml_goals, a.desired_velocity, log=quiet)
@@ -239,6 +272,7 @@ def main():
         def _goals_cb(self, msg):
             if self.cmd is None:
                 return
+            self._leave_episode_mode()
             goals = [(p.position.x, p.position.y) for p in msg.poses]
             self._new_goals(goals if goals else self.yaml_goals, 'from /hunav/agent_goals' if goals else 'yaml goals')
 
@@ -247,13 +281,78 @@ def main():
                 self.cmd.command_speed(msg.data)
                 self.get_logger().info(f'walking speed -> {self.cmd.effective_speed():.2f} m/s')
 
+        # ---- episode mode (2026-11-01) ------------------------------------------
+        def _leave_episode_mode(self):
+            self.episode, self.path, self.remaining = None, None, None
+            self.cyclic = self.yaml_cyclic
+
+        def _reset_cb(self, msg):
+            q = msg.orientation
+            yaw = 2.0 * math.atan2(q.z, q.w)
+            self._pending_reset = (msg.position.x, msg.position.y, yaw)
+
+        def _apply_reset(self, a):
+            x, y, yaw = self._pending_reset
+            self._pending_reset = None
+            self._leave_episode_mode()
+            a.position.position.x, a.position.position.y = float(x), float(y)
+            a.position.orientation.z, a.position.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            a.yaw = float(yaw)
+            if hasattr(a, 'velocity') and hasattr(a.velocity, 'linear'):
+                a.velocity.linear.x = a.velocity.linear.y = 0.0
+                a.velocity.angular.z = 0.0
+            for f in ('linear_vel', 'angular_vel'):
+                if hasattr(a, f):
+                    setattr(a, f, 0.0)
+            self.cyclic = False
+            self._new_goals([(x, y)], 'reset: standing at the new pose')
+            self._set_model_pose(x, y, yaw)           # the actor jumps now, not one step later
+            self.get_logger().info(f'pedestrian RESET to ({x:.2f}, {y:.2f}) world, yaw {math.degrees(yaw):.0f} deg')
+
+        def _episode_cb(self, msg):
+            if self.cmd is None:
+                return
+            try:
+                ep = json.loads(msg.data)
+                goal = (float(ep['goal'][0]), float(ep['goal'][1]))
+                speed = float(ep['speed'])
+            except (ValueError, KeyError, TypeError) as e:
+                self.get_logger().error(f'bad /hunav/episode_goal message ({e}): {msg.data[:200]}')
+                return
+            self.episode = ep
+            self.cyclic = False
+            self.cmd.command_speed(speed)
+            if ep.get('path'):
+                self.path = PathFollower(ep['path'], PATH_LOOKAHEAD_M)
+                self.user_goals = [goal]
+                self.follower = None
+                self.sent_target = None
+                self.get_logger().info(f'episode {ep.get("id")}: PATH mode, {len(ep["path"])} points, '
+                                       f'{self.path.length:.1f} m, {speed:.2f} m/s')
+            else:
+                self.path = None
+                self._new_goals([goal], f'episode {ep.get("id")}')
+                self.get_logger().info(f'episode {ep.get("id")}: ROUTE mode to ({goal[0]:.2f}, {goal[1]:.2f}), '
+                                       f'{speed:.2f} m/s' + (f', stop slowdown {ep["stop_slowdown_m"]} m'
+                                                              if ep.get('stop_slowdown_m') else ''))
+
         # ---- every HuNav step ---------------------------------------------------
         def _tick(self):
             if self.cmd is not None and self.current_agents is not None and self.current_agents.agents \
                     and not self._compute_agents_pending:
                 a = self.current_agents.agents[0]
+                if self._pending_reset is not None:
+                    self._apply_reset(a)
                 px, py = a.position.position.x, a.position.position.y
-                target = self.follower.update(px, py) if self.follower else None
+                if self.path is not None:
+                    target, self.remaining = self.path.update(px, py)
+                    if self.sent_target is not None and math.dist(target, self.sent_target) < CARROT_RESEND_M \
+                            and self.remaining > PATH_LOOKAHEAD_M:
+                        target = None                 # carrot barely moved: keep the old one
+                else:
+                    target = self.follower.update(px, py) if self.follower else None
+                    if self.episode is not None and self.follower is not None:
+                        self.remaining = route_remaining(px, py, self.follower.remaining_route())
                 if target is not None and (self.sent_target is None
                                            or math.dist(target, self.sent_target) > SAME_POINT_M):
                     self.cmd.command_goals([target])
@@ -266,7 +365,11 @@ def main():
                         p.position.x, p.position.y = float(x), float(y)
                         p.orientation.w = 1.0
                         a.goals.append(p)
-                a.desired_velocity = float(self.cmd.speed_for_request())
+                speed = float(self.cmd.speed_for_request())
+                if self.episode is not None and self.episode.get('stop_slowdown_m') and self.remaining is not None:
+                    speed = stop_speed(speed, self.remaining, float(self.episode['stop_slowdown_m']))
+                a.desired_velocity = speed
+                self._speed_sent = speed
                 a.closest_obs = [Point(x=float(x), y=float(y), z=0.0)
                                  for x, y in closest_points(px, py, self.obstacles, OBSTACLE_RANGE_M)]
             super()._tick()
@@ -287,6 +390,12 @@ def main():
                 out.poses.append(p)
             self.goals_pub.publish(out)
             self.speed_pub.publish(Float32(data=float(self.cmd.effective_speed())))
+            st = {'id': self.episode.get('id') if self.episode else None,
+                  'mode': 'idle' if self.episode is None else ('path' if self.path is not None else 'route'),
+                  'x': round(a.position.position.x, 3), 'y': round(a.position.position.y, 3),
+                  'remaining_m': None if self.remaining is None else round(self.remaining, 3),
+                  'speed_cmd': round(getattr(self, '_speed_sent', 0.0), 3)}
+            self.state_pub.publish(String(data=json.dumps(st)))
 
         # ---- RViz -----------------------------------------------------------------
         def _draw(self):
@@ -315,7 +424,17 @@ def main():
                 outline = o.corners(0.0)
                 line.points = [odom_pt(x, y, 0.05) for x, y in outline + outline[:1]]
                 arr.markers.append(line)
-            if self.follower is not None and self.current_agents is not None and self.current_agents.agents:
+            if self.path is not None and self.current_agents is not None and self.current_agents.agents:
+                a = self.current_agents.agents[0]
+                line = mk('route', 0, Marker.LINE_STRIP, (0.1, 0.8, 1.0, 0.9), 0.04)
+                line.points = [odom_pt(x, y, 0.08) for x, y in self.path.p]
+                arr.markers.append(line)
+                if self.sent_target is not None:
+                    ball = mk('route', 1, Marker.SPHERE, (0.1, 0.8, 1.0, 0.9), 0.2)
+                    ball.pose.position = odom_pt(self.sent_target[0], self.sent_target[1], 0.1)
+                    arr.markers.append(ball)
+            if self.path is None and self.follower is not None and self.current_agents is not None \
+                    and self.current_agents.agents:
                 a = self.current_agents.agents[0]
                 route = self.follower.remaining_route()
                 if route:
