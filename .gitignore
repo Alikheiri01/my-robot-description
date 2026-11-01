@@ -14,3 +14,12 @@ dataset_codes/samples/
 dataset_codes/runs/
 agent_control/.spawned_obstacles
 agent_control/current_obstacles.yaml
+
+# MVP collection (2026-11-01)
+__pycache__/
+*_old.py
+*_old.rviz
+mvp_collection/data/
+mvp_collection/logs/
+hunav_assets/services.txt
+hunav_assets/topics.txt
