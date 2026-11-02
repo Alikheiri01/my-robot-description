@@ -13,9 +13,9 @@ This adds what only the episodes know:
                 have the event INSIDE their 6 s future (the samples that teach the manoeuvre)
 
 USAGE
-    python3 check_scripts/check_run.py data/A_detour/env_A_000/runs/<run folder>
-    python3 check_scripts/check_run.py data/A_detour/env_A_000            # its newest run
-    python3 check_scripts/check_run.py data/A_detour                      # newest run of every environment
+    python3 check_scripts/check_run.py datasets/dev/A_detour/env_A_000/runs/<run folder>
+    python3 check_scripts/check_run.py datasets/dev/A_detour/env_A_000            # its newest run
+    python3 check_scripts/check_run.py datasets/dev/A_detour                      # newest run of every environment
 """
 import json
 import sys

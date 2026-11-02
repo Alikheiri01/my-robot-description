@@ -14,18 +14,24 @@ plans all its EPISODES offline, before Gazebo is involved:
     follow) with a robot pose chosen so that the planned share of USABLE samples is
     at least USABLE_TARGET (plan_model.py: camera wedge, 8 m range, wall occlusion).
 
-Output, one folder per environment (the runner and the check read these):
-    data/<scenario>/<env_id>/scene.yaml        world frame, spawn_obstacles.py format
-    data/<scenario>/<env_id>/environment.json  everything else (odom frame): episodes, robot plans
-    data/<scenario>/<env_id>/preview.png       top view: routes, events, robot poses and views
-    data/<scenario>/summary.csv                one line per episode
+Output (2026-11-02): one DATASET folder per generated set, everything of that set inside it
+(environments, their recorded runs, the session logs). Default dataset: 'dev' (tests).
+    datasets/<dataset>/<scenario>/<env_id>/scene.yaml        world frame, spawn_obstacles.py format
+    datasets/<dataset>/<scenario>/<env_id>/environment.json  everything else (odom frame)
+    datasets/<dataset>/<scenario>/<env_id>/preview.png       top view: routes, events, robot poses
+    datasets/<dataset>/<scenario>/summary.csv                one line per episode
+  later, written by episode_runner.py:
+    datasets/<dataset>/<scenario>/<env_id>/runs/<run>/       a recording (samples, reports, trace)
+    datasets/<dataset>/<scenario>/<env_id>/dry_runs/<time>/  a run without recording
+    datasets/<dataset>/logs/                                 session logs of the runner
+  datasets/ is in .gitignore; a dataset is rebuilt exactly from its command (same --seed).
 
 USAGE (no ROS, no simulation needed)
     cd ~/ros2_ws/src/my_robot_description/mvp_collection
-    python3 environment_generator.py --scenario A --envs 3          # three A environments
-    python3 environment_generator.py --all --envs 20                # the whole MVP plan
-    python3 environment_generator.py --scenario B --envs 1 --seed 7 # reproducible
-Then check them:  python3 check_scripts/check_environments.py data/A_detour
+    python3 environment_generator.py --all --envs 4 --seed 1                  # -> datasets/dev
+    python3 environment_generator.py --all --envs 20 --seed 1 --dataset mvp_v1   # the real set
+    python3 environment_generator.py --scenario B --envs 1 --seed 7 --dataset try_b
+Then check them:  python3 check_scripts/check_environments.py datasets/dev/*
 
 Templates (local frame: the pedestrian walks roughly along +x; a random mirror flips y):
     T1 straight hallway   (A with the event obstacle, E straight, C ends in a dead end)
@@ -54,7 +60,7 @@ import plan_model as M  # noqa: E402
 from hunav_config import SPAWN_YAW, odom_to_world, world_to_odom  # noqa: E402
 from world_obstacles import CLEARANCE_M, Obstacle, min_distance, plan_human_route  # noqa: E402
 
-DATA_DIR = HERE / 'data'
+DATASETS_DIR = HERE / 'datasets'
 GENERATOR_VERSION = '2026-11-01'
 
 
@@ -863,12 +869,15 @@ def main():
     ap.add_argument('--envs', type=int, default=3, help='environments per scenario')
     ap.add_argument('--first', type=int, default=0, help='index of the first environment')
     ap.add_argument('--seed', type=int, default=1, help='base seed (same seed = same environments)')
-    ap.add_argument('--out', default=str(DATA_DIR))
+    ap.add_argument('--dataset', default='dev', help='dataset folder name under datasets/ (default: dev)')
+    ap.add_argument('--out', default=None, help='explicit output folder (overrides --dataset)')
     ap.add_argument('--no-preview', action='store_true')
     args = ap.parse_args()
     if not args.all and not args.scenario:
         sys.exit('Give --scenario A|B|C|D|E or --all')
     scen = list(C.SCENARIOS) if args.all else [args.scenario]
+    if args.out is None:
+        args.out = str(DATASETS_DIR / args.dataset)
     for si, s in enumerate(scen):
         out = Path(args.out) / C.SCENARIOS[s]
         out.mkdir(parents=True, exist_ok=True)

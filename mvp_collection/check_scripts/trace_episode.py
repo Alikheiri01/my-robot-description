@@ -23,10 +23,16 @@ WHAT IT DOES
           and writes one PNG per episode (map + speed/seen over time); --gif also writes
           an animation like sim_robot_driver.py, but with the REAL tracks.
 
+OUTPUT (2026-11-02: one folder per run, nothing in logs/)
+    <out>/trace.csv  <out>/trace_report.txt  <out>/<episode_id>.png  (and .gif with --gif)
+  episode_runner.py starts this script itself, with --out <run folder>/trace
+  (recorded: datasets/<dataset>/<scenario>/<env>/runs/<run>/trace, not recorded: .../dry_runs/<time>/trace).
+  Started by hand without --out: datasets/<dataset>/<scenario>/<env>/traces/<time>/
+
 USAGE
-    python3 check_scripts/trace_episode.py data/A_detour/env_A_000           # live, Ctrl+C at the end
-    python3 check_scripts/trace_episode.py data/A_detour/env_A_000 --gif
-    python3 check_scripts/trace_episode.py data/A_detour/env_A_000 --replay logs/trace_XXXX.csv [--gif]
+    python3 check_scripts/trace_episode.py datasets/dev/A_detour/env_A_000           # live, Ctrl+C at the end
+    python3 check_scripts/trace_episode.py datasets/dev/A_detour/env_A_000 --gif --out some/folder
+    python3 check_scripts/trace_episode.py datasets/dev/A_detour/env_A_000 --replay .../trace/trace.csv [--gif]
 """
 import csv
 import json
@@ -49,7 +55,6 @@ import plan_model as M  # noqa: E402
 from sim_robot_driver import env_obstacles  # noqa: E402
 from world_obstacles import min_distance  # noqa: E402
 
-LOG_DIR = MVP / 'logs'
 FIELDS = ['t', 'episode', 'rx', 'ry', 'rh', 'wx', 'wy', 'wh', 'px', 'py', 'cmd_v', 'cmd_w']
 STUCK_CMD_V = 0.1
 STUCK_SPEED = 0.05
@@ -223,6 +228,16 @@ def animate_episode(ep, a, obstacles, path):
 
 
 def report(env_dir, csv_path, gif):
+    """Checks every episode in the trace; prints and writes <csv folder>/trace_report.txt;
+    plots go next to the csv as <episode_id>.png (.gif)."""
+    out_dir = csv_path.parent
+    rep_f = open(out_dir / 'trace_report.txt', 'w')
+
+    def print(*a):                      # noqa: A001 -- to the terminal AND the report file
+        line = ' '.join(str(x) for x in a)
+        sys.stdout.write(line + '\n')
+        sys.stdout.flush()
+        rep_f.write(line + '\n')
     env = json.loads((env_dir / 'environment.json').read_text())
     obstacles = env_obstacles(env)
     eps = {e['episode_id']: e for e in env['episodes']}
@@ -253,7 +268,7 @@ def report(env_dir, csv_path, gif):
               f'seen {a["seen"].mean():4.0%}  stuck {a["stuck_sec"]:.1f} s  closest wall {a["min_wall"]:.2f} m  '
               f'closest pedestrian {a["min_ped"]:.2f} m  RViz robot off by {a["gap_med"]:.1f} m'
               + ('  <- ' + '; '.join(probs) if probs else ''))
-        png = csv_path.with_name(f'{csv_path.stem}_{eid}.png')
+        png = out_dir / f'{eid}.png'
         plot_episode(ep, a, obstacles, png)
         print(f'        plot: {png}')
         if gif:
@@ -261,14 +276,16 @@ def report(env_dir, csv_path, gif):
             animate_episode(ep, a, obstacles, g)
             print(f'        animation: {g}')
     print('\nTRACE:', 'PASS' if all_ok and sl else 'NOT YET')
+    rep_f.close()
     return all_ok
 
 
 # ---------------------------------------------------------------------------
 # live recording (ROS)
 # ---------------------------------------------------------------------------
-def run_live(env_dir, gif):
+def run_live(env_dir, gif, out_dir):
     import rclpy
+    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.parameter import Parameter
     from rclpy.qos import qos_profile_sensor_data
@@ -329,14 +346,14 @@ def run_live(env_dir, gif):
     node = Tracer()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     rows = node.rows
     node.destroy_node()
     if rclpy.ok():
         rclpy.shutdown()
-    LOG_DIR.mkdir(exist_ok=True)
-    path = LOG_DIR / f'trace_{time.strftime("%Y%m%d_%H%M%S")}.csv'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / 'trace.csv'
     with open(path, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(FIELDS)
@@ -355,7 +372,9 @@ def main():
     if '--replay' in args:
         report(env_dir, Path(args[args.index('--replay') + 1]), gif)
     else:
-        run_live(env_dir, gif)
+        out = Path(args[args.index('--out') + 1]) if '--out' in args else \
+            env_dir / 'traces' / time.strftime('%Y%m%d_%H%M%S')
+        run_live(env_dir, gif, out)
 
 
 if __name__ == '__main__':
