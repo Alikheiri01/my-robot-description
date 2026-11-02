@@ -22,8 +22,8 @@ and prints one line per environment, a summary (mode mix, planned samples, wall-
 budget) and writes overview.png (all environments of the folder, top view).
 
 USAGE
-    python3 check_scripts/check_environments.py data/A_detour
-    python3 check_scripts/check_environments.py data/*          # every scenario
+    python3 check_scripts/check_environments.py datasets/dev/A_detour
+    python3 check_scripts/check_environments.py datasets/dev/*          # every scenario
 Exit code 0 = all PASS.
 """
 import json

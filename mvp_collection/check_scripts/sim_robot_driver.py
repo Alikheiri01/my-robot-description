@@ -13,11 +13,11 @@ It does not test Gazebo (wheel slip, the DiffDrive limits, HuNav reacting to the
 that is P5. It tests that the driver does what the plan assumed.
 
 USAGE
-    python3 check_scripts/sim_robot_driver.py data/A_detour            # all episodes of a scenario
-    python3 check_scripts/sim_robot_driver.py data/*
-    python3 check_scripts/sim_robot_driver.py data/B_corner --animate env_B_001 3
-        -> data/B_corner/env_B_001/anim_ep3.gif : pedestrian, robot, camera wedge (green = seen)
-    python3 check_scripts/sim_robot_driver.py data/B_corner --animate env_B_001 all
+    python3 check_scripts/sim_robot_driver.py datasets/dev/A_detour            # all episodes of a scenario
+    python3 check_scripts/sim_robot_driver.py datasets/dev/*
+    python3 check_scripts/sim_robot_driver.py datasets/dev/B_corner --animate env_B_001 3
+        -> datasets/dev/B_corner/env_B_001/anim_ep3.gif : pedestrian, robot, camera wedge (green = seen)
+    python3 check_scripts/sim_robot_driver.py datasets/dev/B_corner --animate env_B_001 all
 """
 import json
 import math

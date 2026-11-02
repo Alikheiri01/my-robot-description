@@ -54,11 +54,11 @@ PED_BODY_M = 0.3                 # the last 0.3 m of the sight line is the pedes
 # Robot behaviour
 # ----------------------------------------------------------------------------
 ROBOT_RADIUS_M = 0.35            # footprint radius (CHECK with the robot's real size)
-ROBOT_WALL_CLEAR_M = 0.5         # parked robot centre -> any wall/obstacle
+ROBOT_WALL_CLEAR_M = 0.7         # parked robot centre -> any wall/obstacle (2026-11-02: was 0.5; a watching robot drifts ~0.5 m while it turns, skid steering)
 ROBOT_PATH_CLEAR_M = 0.45        # follow: the robot's track keeps this from every wall (radius + 0.1)
 ROBOT_ROUTE_CLEAR_M = 1.2        # parked robot centre -> pedestrian route (HuNav reacts to the robot)
 ROBOT_START_CLEAR_M = 1.5        # robot centre -> pedestrian start / goal
-ROBOT_VMAX = 0.8                 # m/s (follow mode)
+ROBOT_VMAX = 1.5                 # m/s (follow mode) (2026-11-02: was 0.8, an assumption; DiffDrive allows 4.0, pedestrians walk up to 1.4)
 ROBOT_WMAX = 1.0                 # rad/s (watch and follow)
 WATCH_DEADBAND = math.radians(10.0)   # watch: turn when the pedestrian is further than this off axis
 WATCH_GAIN = 2.0                 # rad/s per rad of heading error

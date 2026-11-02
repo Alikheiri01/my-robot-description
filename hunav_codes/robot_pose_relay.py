@@ -27,8 +27,12 @@ MODES
   --source wheel  old behaviour: /odom_wheel passed through to /odom unchanged
                   (to compare, or if the plugin is missing)
 
-Note: RViz still draws the robot model from the wheel odometry's /tf; that is
-display only, nothing in the pipeline uses it.
+TF (CHANGED 2026-11-02): this node also broadcasts odom -> base_link on /tf from
+the same pose it publishes on /odom, so RViz draws the robot model (and the point
+cloud, which hangs off the robot) where the robot really is -- also after the MVP
+episode runner teleports it. The DiffDrive's own odom -> base_link is moved off /tf
+(gazebo_control.xacro: <tf_topic>tf_wheel_unused</tf_topic>); two publishers of the
+same transform would make RViz flicker between them.
 """
 import argparse
 import math
@@ -52,6 +56,8 @@ def main():
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import TransformStamped
+    from tf2_ros import TransformBroadcaster
     from hunav_config import world_to_odom, yaw_from_quaternion, yaw_to_quaternion, ensure_single_instance
 
     ensure_single_instance('robot_pose_relay')
@@ -61,6 +67,7 @@ def main():
             super().__init__('robot_pose_relay')
             # RELIABLE publisher: works for both reliable and best-effort subscribers
             self.pub = self.create_publisher(Odometry, OUT_TOPIC, 10)
+            self.tf = TransformBroadcaster(self)
             self.n = 0
             src = TRUTH_TOPIC if args.source == 'truth' else WHEEL_TOPIC
             self.create_subscription(Odometry, src, self._truth if args.source == 'truth' else self._wheel,
@@ -81,11 +88,24 @@ def main():
             o.x, o.y, o.z, o.w = qx, qy, qz, qw
             out.twist = msg.twist                        # body frame, same convention as DiffDrive
             self.pub.publish(out)
+            self._send_tf(out)
             self.n += 1
 
         def _wheel(self, msg):
             self.pub.publish(msg)
+            self._send_tf(msg)
             self.n += 1
+
+        def _send_tf(self, odom):
+            """odom -> base_link for RViz, same stamp and pose as the /odom message."""
+            t = TransformStamped()
+            t.header.stamp = odom.header.stamp
+            t.header.frame_id = 'odom'
+            t.child_frame_id = 'base_link'
+            t.transform.translation.x = odom.pose.pose.position.x
+            t.transform.translation.y = odom.pose.pose.position.y
+            t.transform.rotation = odom.pose.pose.orientation
+            self.tf.sendTransform(t)
 
         def _status(self):
             if self.n == 0:

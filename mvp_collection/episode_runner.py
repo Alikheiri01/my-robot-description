@@ -27,10 +27,21 @@ PER ENVIRONMENT
   5. record_session.py stopped like Ctrl+C (it writes report.txt), the run folder moved to
      <env dir>/runs/, the scene removed
 
+TRACE (2026-11-02): the runner starts check_scripts/trace_episode.py itself for every
+environment (true robot track, stuck, usable share, one PNG per episode; --gif adds
+animations) and stops it before the recording is stopped.
+
+WHERE THINGS GO (one folder per run)
+  recorded      datasets/<dataset>/<scenario>/<env>/runs/<run>/    samples/, report.txt (record_session),
+                                                     episodes/<id>.json, trace/, runner.log
+  --no-record   datasets/<dataset>/<scenario>/<env>/dry_runs/<time>/   episodes/, trace/, runner.log
+  datasets/<dataset>/logs/   only the whole-session logs: runner_<time>.log, robot_driver_<time>.log
+
 USAGE (from mvp_collection/)
-    python3 episode_runner.py data/E_walk/env_E_001 --episodes 1 --no-record   # watch one episode
-    python3 episode_runner.py data/A_detour/env_A_000                          # one environment, recorded
-    python3 episode_runner.py data/A_detour data/B_corner --skip-done          # the collection
+    python3 episode_runner.py datasets/dev/E_walk/env_E_001 --episodes 1 --no-record   # watch one episode
+    python3 episode_runner.py datasets/dev/A_detour/env_A_000                          # one environment, recorded
+    python3 episode_runner.py datasets/dev/A_detour/env_A_000 --gif                    # + animations
+    python3 episode_runner.py datasets/mvp_v1/A_detour datasets/mvp_v1/B_corner --skip-done          # the collection
 Ctrl+C: stops after cleaning up (robot stopped, recording stopped and reported, scene removed).
 """
 import argparse
@@ -61,7 +72,6 @@ import plan_model as M  # noqa: E402
 from hunav_config import WORLD_NAME, odom_to_world, world_to_odom, yaw_to_quaternion  # noqa: E402
 
 CURRENT_OBSTACLES = AC / 'current_obstacles.yaml'
-LOG_DIR = HERE / 'logs'
 
 
 class Abort(Exception):
@@ -114,6 +124,7 @@ def main():
     ap.add_argument('--episodes', default='all', help='"all" or e.g. "0,2"')
     ap.add_argument('--no-record', action='store_true', help='play only, do not run record_session.py')
     ap.add_argument('--skip-done', action='store_true', help='skip environments that already have a recorded run')
+    ap.add_argument('--gif', action='store_true', help='the trace also writes one animation per episode (slow)')
     args = ap.parse_args()
 
     env_dirs = []
@@ -127,6 +138,8 @@ def main():
         sys.exit('No environment folders given (folders with environment.json).')
     if args.skip_done:
         env_dirs = [d for d in env_dirs if not any((r / 'report.txt').exists() for r in (d / 'runs').glob('*'))]
+    # session logs go to the dataset of the first environment: datasets/<dataset>/logs
+    LOG_DIR = env_dirs[0].parents[1] / 'logs'
     LOG_DIR.mkdir(exist_ok=True)
 
     import rclpy
@@ -210,15 +223,25 @@ def main():
 
     rclpy.init()
     node = Runner()
-    threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
+    # FIXED (2026-11-02): an executor that is shut down before rclpy (the plain rclpy.spin
+    # thread was still running at exit: 'terminate called without an active exception').
+    from rclpy.executors import SingleThreadedExecutor
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_f = open(LOG_DIR / f'runner_{stamp}.log', 'a')
+
+    run_log = {'f': None}           # per-run copy of the log (in the run folder)
 
     def say(msg):
         line = f'[{datetime.now().strftime("%H:%M:%S")} sim {node.now():8.1f}] {msg}'
         print(line, flush=True)
-        log_f.write(line + '\n')
-        log_f.flush()
+        for f in (log_f, run_log['f']):
+            if f is not None:
+                f.write(line + '\n')
+                f.flush()
 
     stop = {'flag': False}
 
@@ -414,7 +437,19 @@ def main():
             if rec.poll() is not None:
                 raise Abort(f'record_session.py exited at start-up, see {rlog.name}')
             say(f'  recording into {run_dir.name}')
-        ep_dir = (run_dir / 'episodes') if run_dir else (env_dir / 'dry_runs' / stamp)
+        out_root = run_dir if run_dir else (env_dir / 'dry_runs' / datetime.now().strftime('%Y%m%d_%H%M%S'))
+        out_root.mkdir(parents=True, exist_ok=True)
+        ep_dir = out_root / 'episodes'
+        run_log['f'] = open(out_root / 'runner.log', 'a')
+        run_log['f'].write(f'{env["environment_id"]} ({env["scenario_name"]}, {env["template"]}), '
+                           f'{len(eps)} episode(s), session log {log_f.name}\n')
+        tcmd = [sys.executable, str(HERE / 'check_scripts' / 'trace_episode.py'), str(env_dir),
+                '--out', str(out_root / 'trace')] + (['--gif'] if args.gif else [])
+        tlog = open(out_root / 'trace_stdout.txt', 'w')
+        tracer = subprocess.Popen(tcmd, cwd=str(HERE), stdout=tlog, stderr=subprocess.STDOUT, start_new_session=True,
+                                  env=dict(os.environ, PYTHONUNBUFFERED='1'))
+        say(f'  trace started -> {out_root / "trace"}')
+        time.sleep(3.0)
         outcomes = []
         try:
             for ep in eps:
@@ -430,6 +465,20 @@ def main():
         finally:
             node.robot_cmd({'mode': 'stop'})
             node.set_id('idle')
+            # the trace first: it writes into the run folder, which is moved below
+            if tracer.poll() is None:
+                os.killpg(tracer.pid, signal.SIGINT)
+            try:
+                tracer.wait(timeout=600 if args.gif else 180)
+            except subprocess.TimeoutExpired:
+                os.killpg(tracer.pid, signal.SIGKILL)
+            trep = out_root / 'trace' / 'trace_report.txt'
+            tres = re.search(r'TRACE: (.*)', trep.read_text()) if trep.exists() else None
+            say(f'  trace: {tres.group(1) if tres else "NO TRACE REPORT (see trace_stdout.txt)"}')
+            if trep.exists():
+                for ln in trep.read_text().splitlines():
+                    if ln.strip().startswith(('PASS', 'FAIL')):
+                        say('    ' + ln.strip())
             if rec is not None:
                 say('  stopping record_session.py (it writes its report, ~1 min)...')
                 os.killpg(rec.pid, signal.SIGINT)
@@ -442,6 +491,8 @@ def main():
                 dest = env_dir / 'runs' / run_dir.name
                 dest.parent.mkdir(exist_ok=True)
                 shutil.move(str(run_dir), str(dest))
+                rlog.close()
+                shutil.copy(rlog.name, dest / 'record_session.log')
                 say(f'  report: {overall.group(1) if overall else "NO REPORT"}  -> {dest}')
             subprocess.run([sys.executable, 'spawn_obstacles.py', '--remove'], cwd=str(AC), capture_output=True)
             try:
@@ -450,6 +501,9 @@ def main():
             except Abort as e:
                 say(f'  WARNING: {e}')
         say(f'  {env["environment_id"]} done: ' + ', '.join(f'{o}' for o in outcomes))
+        if run_log['f'] is not None:
+            run_log['f'].close()
+            run_log['f'] = None
         return outcomes
 
     summary = []
@@ -470,6 +524,8 @@ def main():
         except subprocess.TimeoutExpired:
             driver.kill()
         say('SUMMARY: ' + '; '.join(f'{n}: {"/".join(o)}' for n, o in summary))
+        executor.shutdown(timeout_sec=2.0)
+        spin_thread.join(timeout=5.0)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
