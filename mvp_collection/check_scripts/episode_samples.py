@@ -12,6 +12,7 @@ and when in the episode that happened.
   history  the 8 history steps, oldest first: 1 = seen, 0 = not seen, . = no grid near that time
            (counts as not seen)
   usable   anchor seen and >= USABLE_MIN_HISTORY_SEEN history steps seen
+  index    position of the sample in the run's sorted sample list = the number for the viewer's --start
 
 USAGE
     python3 check_scripts/episode_samples.py <run folder or environment folder> <episode id>
@@ -43,7 +44,9 @@ def main():
     meas = json.loads(ep_file.read_text())['measured']
     t0 = meas['t_walk_start_sim']
     rows, fields = [], None
-    for f in sorted((run / 'samples').glob('*.npz')):
+    files = sorted((run / 'samples').glob('*.npz'))
+    index = {f.name: i for i, f in enumerate(files)}
+    for f in files:
         d = np.load(f, allow_pickle=True)
         if 'episode_id' not in d.files or str(d['episode_id']) != eid:
             continue
@@ -51,15 +54,17 @@ def main():
         hist = np.asarray(d['ped_seen_history']).astype(int).ravel()
         anchor = int(d['ped_seen_anchor'])
         usable = anchor == 1 and int((hist == 1).sum()) >= C.USABLE_MIN_HISTORY_SEEN
-        rows.append((float(d['anchor_time_sim']) - t0, anchor, ''.join('.' if v < 0 else str(v) for v in hist), usable, f.name))
+        rows.append((float(d['anchor_time_sim']) - t0, anchor, ''.join('.' if v < 0 else str(v) for v in hist), usable, f.name, index[f.name]))
     print(f'== {run}')
     print(f'   {eid}: {len(rows)} samples, walk start at sim {t0:.1f} s, event at '
           f'{meas.get("t_event_after_walk_start_sec", "-")} s, end at {meas.get("t_end_after_walk_start_sec", "-")} s')
     print(f'   fields in a sample: {", ".join(fields) if fields else "-"}')
-    print(f'   {"t (s)":>7s}  anchor  history   usable  file')
-    for t, a, h, u, name in sorted(rows):
-        print(f'   {t:7.1f}  {a:6d}  {h:8s}  {"yes" if u else "no":6s}  {name}')
+    print(f'   {"t (s)":>7s}  {"index":>5s}  anchor  history   usable  file')
+    for t, a, h, u, name, i in sorted(rows):
+        print(f'   {t:7.1f}  {i:5d}  {a:6d}  {h:8s}  {"yes" if u else "no":6s}  {name}')
     if rows:
+        first = min(r[5] for r in rows)
+        print(f'   viewer (from dataset_codes/):  python3 inspect_dataset_samples.py --view --start {first} {(run / "samples").resolve()}')
         print(f'   usable {sum(r[3] for r in rows)}/{len(rows)}, anchor seen {sum(r[1] for r in rows)}/{len(rows)}')
 
 
