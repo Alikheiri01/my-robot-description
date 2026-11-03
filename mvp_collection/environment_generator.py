@@ -513,8 +513,11 @@ def episodes_E_arc(env, rng):
     speeds = speeds_for(rng)
     vmax = max(speeds)
     Lp = (C.BEFORE_EVENT_SEC + C.AFTER_EVENT_SEC) * vmax + C.END_TRIGGER_M + 1.0
-    R = U(rng, C.ARC_RADIUS_RANGE)
-    sweep = min(Lp / R, 1.6)
+    # CHANGED (2026-11-03): the curve starts within ARC_LEAD_MAX_M of the path start, so every kept
+    # sample's history already shows it (an arc whose onset lies in the future is not explained by anything)
+    sweep = U(rng, C.ARC_SWEEP_RANGE)
+    lead = U(rng, (0.0, C.ARC_LEAD_MAX_M))
+    R = (Lp - lead) / sweep
     lead = Lp - R * sweep                         # straight lead-in, then the arc
     pts = []
     for s in np.arange(0.0, Lp + 1e-9, C.ARC_WAYPOINT_STEP_M):
@@ -651,6 +654,30 @@ def robot_candidates(env, route_pl, ep, rng):
     return out
 
 
+def event_time(tl, ep):
+    ev = ep['event']
+    if ev is None:
+        return None
+    if ev['type'] == 'stop':
+        return tl['t_end'] - ep['stop']['stand_sec']
+    return M.time_at_s(tl, ev['s'])
+
+
+def plan_ok(tl, ep, seen, st):
+    """NEW (2026-11-03): a plan counts only if the whole walk reaches USABLE_TARGET AND the samples
+    around the event (just before and while the pedestrian passes the door / corner / obstacle) are
+    usable too. Before, a robot that saw only the first half of the walk (the door beyond its 8 m
+    range) passed with a good overall share."""
+    if st[2] < C.USABLE_TARGET:
+        return False
+    t_ev = event_time(tl, ep)
+    if t_ev is None:
+        return True
+    n, _, share = M.event_usable_stats(tl, seen, t_ev)
+    ep['_ev'] = (n, share)            # the last call before a placement is accepted belongs to that placement
+    return n >= C.EVENT_MIN_SAMPLES and share >= C.EVENT_USABLE_TARGET
+
+
 def place_robot(env, ep, rng):
     """Choose a robot behaviour for the episode with planned usable share >= USABLE_TARGET."""
     route_pl = M.Polyline(ep['route'])
@@ -675,7 +702,7 @@ def place_robot(env, ep, rng):
                 rxy, rh, seen, st = M.evaluate(tl, route_pl, robot, env.obstacles)
                 if min(env.clear_at(*q) for q in rxy[::3]) < C.ROBOT_PATH_CLEAR_M:
                     break                     # the follower would scrape a wall (door): no follow here
-                if st[2] >= C.USABLE_TARGET:
+                if plan_ok(tl, ep, seen, st):
                     robot['start_pose'] = [round(float(rxy[0, 0]), 3), round(float(rxy[0, 1]), 3), round(float(rh[0]), 4)]
                     return robot, st, mode != first
             continue
@@ -686,7 +713,7 @@ def place_robot(env, ep, rng):
                 h0 = math.atan2(tl['xy'][0, 1] - p[1], tl['xy'][0, 0] - p[0])
                 robot = {'mode': 'watch', 'pose': (p[0], p[1], h0)}
                 rxy, rh, seen, st = M.evaluate(tl, route_pl, robot, env.obstacles)
-                if st[2] >= C.USABLE_TARGET:
+                if plan_ok(tl, ep, seen, st):
                     robot['start_pose'] = [round(p[0], 3), round(p[1], 3), round(h0, 4)]
                     del robot['pose']
                     return robot, st, mode != first
@@ -701,7 +728,7 @@ def place_robot(env, ep, rng):
                 for h in heads:
                     robot = {'mode': 'still', 'pose': (p[0], p[1], h)}
                     rxy, rh, seen, st = M.evaluate(tl, route_pl, robot, env.obstacles)
-                    if st[2] >= C.USABLE_TARGET:
+                    if plan_ok(tl, ep, seen, st):
                         robot['start_pose'] = [round(p[0], 3), round(p[1], 3), round(h, 4)]
                         del robot['pose']
                         return robot, st, mode != first
@@ -714,6 +741,10 @@ def finish_episode(env, ep, robot, st):
     ep['robot'] = robot
     ep['planned'] = {'t_end_sec': round(tl['t_end'], 2), 'n_kept': st[0], 'n_usable': st[1],
                      'usable_share': round(st[2], 3)}
+    if '_ev' in ep:
+        ep['planned']['event_samples'] = int(ep['_ev'][0])
+        ep['planned']['event_usable_share'] = round(float(ep['_ev'][1]), 3)
+        del ep['_ev']
     if ep['event'] is not None:
         if ep['event']['type'] == 'stop':
             ep['event']['t_planned_sec'] = round(tl['t_end'] - ep['stop']['stand_sec'], 2)

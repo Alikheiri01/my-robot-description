@@ -68,6 +68,9 @@ FOLLOW_GAIN = 1.0                # 1/s, speed = gain * (distance error)
 BEHIND_START_M = 6.0             # free hallway behind the pedestrian start (room for a follower)
 MODE_SHARE = {'still': 0.3, 'watch': 0.3, 'follow': 0.4}
 USABLE_TARGET = 0.6              # planned usable share; the real target is >= 0.5 (margin for the model)
+EVENT_WINDOW_SEC = (2.5, 0.0)    # NEW (2026-11-03): the samples just BEFORE the event (anchors from 2.5 s before it up to it): there the manoeuvre is imminent and its place must be in view (after a corner the pedestrian is out of view anyway)
+EVENT_USABLE_TARGET = 0.8        # planned usable share of those samples (the plan must SEE the pass, not only the walk before it)
+EVENT_MIN_SAMPLES = 3            # and at least this many of them
 ROBOT_CANDIDATE_GRID_M = 0.3
 ROBOT_CANDIDATE_TRIES = 250
 
@@ -85,7 +88,8 @@ BAY_W, BAY_D = 1.8, 1.4           # wall niche where a parked robot can stand
 BAYS_PER_HALL = (2, 4)
 COLUMN_R_RANGE = (0.2, 0.35)      # E hall columns
 COLUMN_SPACING_RANGE = (4.0, 6.0)
-ARC_RADIUS_RANGE = (6.0, 12.0)    # E arcs
+ARC_LEAD_MAX_M = 3.0             # E arcs (2026-11-03): straight lead-in at most this long, so the curve is already in the history of every kept sample
+ARC_SWEEP_RANGE = (1.0, 1.6)     # E arcs: total turn in rad (57..92 deg); the radius follows from the path length (about 14..28 m, a gentle curve)
 ARC_WAYPOINT_STEP_M = 0.5
 FURNITURE_PER_ENV = (0, 3)
 FURNITURE_ROUTE_CLEAR_M = 0.9     # furniture never changes a planned route (route keeps 0.6 m)
