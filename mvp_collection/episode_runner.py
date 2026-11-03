@@ -428,7 +428,9 @@ def main():
         subprocess.run([sys.executable, 'spawn_obstacles.py', '--remove'], cwd=str(AC), capture_output=True)
         empty = lambda: (lambda c: c is not None and len(c) == 0)(read_current_obstacles())  # noqa: E731
         try:
-            wait(empty, wall_sec=C.SCENE_WAIT_WALL_SEC, what=f'the scene to be removed ({when})')
+            # CHANGED (2026-11-03): first wait shorter; names the bridge still reports after it
+            # (e.g. a model whose spawn timed out but arrived later) are removed by name below
+            wait(empty, wall_sec=min(60.0, C.SCENE_WAIT_WALL_SEC), what=f'the scene to be removed ({when})')
             return
         except Abort:
             pass
@@ -447,14 +449,31 @@ def main():
         say(f'== {env["environment_id"]} ({env["scenario_name"]}, {env["template"]}): {len(eps)} episode(s)')
         clear_scene('before spawning')             # nothing from an earlier environment may remain
         teleport(eps[0])
-        r = subprocess.run([sys.executable, 'spawn_obstacles.py', str(env_dir / 'scene.yaml')], cwd=str(AC),
-                           capture_output=True, text=True)
         n_want = len(env['obstacles'])
-        if f'{n_want}/{n_want} obstacle(s)' not in r.stdout:
-            raise Abort(f'spawn failed:\n{r.stdout[-800:]}{r.stderr[-400:]}')
         names = {'obs_' + o['name'] for o in env['obstacles']}
-        wait(lambda: (lambda c: c is not None and {o.name for o in c} == names)(read_current_obstacles()),
-             wall_sec=C.SCENE_WAIT_WALL_SEC, what='the bridge to report the new scene')
+        # CHANGED (2026-11-03): retries. Right after a scene change Gazebo can be too busy to answer
+        # a spawn call within 3 s ('Service call timed out'); then the scene is cleared and
+        # spawned again, up to SPAWN_ATTEMPTS times, before the environment counts as failed.
+        for attempt in range(1, C.SPAWN_ATTEMPTS + 1):
+            r = subprocess.run([sys.executable, 'spawn_obstacles.py', str(env_dir / 'scene.yaml')], cwd=str(AC),
+                               capture_output=True, text=True)
+            fail = None
+            if f'{n_want}/{n_want} obstacle(s)' not in r.stdout:
+                bad = [ln.strip() for ln in r.stdout.splitlines() if 'FAILED' in ln]
+                fail = f'spawn failed ({len(bad)} of {n_want}): ' + ('; '.join(bad[:3]) or r.stderr[-300:])
+            else:
+                try:
+                    wait(lambda: (lambda c: c is not None and {o.name for o in c} == names)(read_current_obstacles()),
+                         wall_sec=C.SCENE_WAIT_WALL_SEC, what='the bridge to report the new scene')
+                except Abort as e:
+                    fail = str(e)
+            if fail is None:
+                break
+            if attempt == C.SPAWN_ATTEMPTS:
+                raise Abort(f'{fail} (after {attempt} attempts)')
+            say(f'  attempt {attempt}: {fail} -- clearing the scene and spawning again')
+            clear_scene('after a failed spawn')
+            time.sleep(5.0)
         say(f'  scene spawned and confirmed by the bridge ({n_want} obstacles)')
         rec, run_dir = None, None
         if not args.no_record:
