@@ -19,7 +19,6 @@ WHAT IT DOES
                        does not move (< 0.05 m/s) -- wall contact / wheels slipping
             walls      closest true distance robot centre -> wall (>= robot radius)
             pedestrian closest robot-pedestrian distance (>= 1.0 m)
-            rviz gap   how far the RViz robot (wheel odometry) is from the true robot
           and writes one PNG per episode (map + speed/seen over time); --gif also writes
           an animation like sim_robot_driver.py, but with the REAL tracks.
 
@@ -148,7 +147,6 @@ def plot_episode(ep, a, obstacles, path):
     k = a['known']
     ax.plot(a['pxy'][k, 0], a['pxy'][k, 1], '-', color='#1f77b4', lw=2, label='pedestrian (real)')
     ax.plot(a['rxy'][:, 0], a['rxy'][:, 1], 'k-', lw=2, label='robot TRUE (/odom)')
-    ax.plot(a['wxy'][:, 0], a['wxy'][:, 1], ':', color='0.5', lw=2, label='robot in RViz (wheel odometry)')
     if a['stuck_mask'].any():
         s = a['stuck_mask']
         ax.plot(a['rxy'][s, 0], a['rxy'][s, 1], 'rx', ms=8, label='stuck (cmd > 0.1, not moving)')
@@ -266,7 +264,7 @@ def report(env_dir, csv_path, gif):
         us = f'{a["usable"][2]:4.0%} (planned {ep["planned"]["usable_share"]:.0%})' if a['usable'] else '   ?'
         print(f'  {"PASS" if not probs else "FAIL"}  {eid:18s} {ep["robot"]["mode"]:6s} usable {us}  '
               f'seen {a["seen"].mean():4.0%}  stuck {a["stuck_sec"]:.1f} s  closest wall {a["min_wall"]:.2f} m  '
-              f'closest pedestrian {a["min_ped"]:.2f} m  RViz robot off by {a["gap_med"]:.1f} m'
+              f'closest pedestrian {a["min_ped"]:.2f} m'
               + ('  <- ' + '; '.join(probs) if probs else ''))
         png = out_dir / f'{eid}.png'
         plot_episode(ep, a, obstacles, png)

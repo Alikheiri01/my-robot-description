@@ -93,6 +93,17 @@ def ign_set_pose(name, x, y, z, yaw):
     return 'true' in out
 
 
+def ign_remove_model(name):
+    """Removes one model from Gazebo by name. True if Gazebo answered true."""
+    cmd = ['ign', 'service', '-s', f'/world/{WORLD_NAME}/remove', '--reqtype', 'ignition.msgs.Entity',
+           '--reptype', 'ignition.msgs.Boolean', '--timeout', '3000', '--req', f'name: "{name}" type: MODEL']
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=6.0)
+    except subprocess.TimeoutExpired:
+        return False
+    return 'true' in r.stdout
+
+
 def ign_model_pose(name):
     """Gazebo's own pose of a model (ign model -m NAME -p): (x, y, z, yaw) world, or None.
     FIXED (2026-11-01): the robot's height comes from here. /robot_truth/odometry is 2D
@@ -408,12 +419,33 @@ def main():
             f'(planned {ep["planned"]["t_end_sec"]:.1f}){ev_txt}')
         return meas['outcome']
 
+    # ---- scene removal ----------------------------------------------------------------
+    def clear_scene(when):
+        """NEW (2026-11-02): removes every obstacle the bridge still sees and waits until the
+        bridge reports none. spawn_obstacles.py --remove forgets names whose removal failed,
+        so leftovers are then removed by the names the bridge reports. Raises Abort if
+        obstacles are still there after that (a leftover wall would break the next scene)."""
+        subprocess.run([sys.executable, 'spawn_obstacles.py', '--remove'], cwd=str(AC), capture_output=True)
+        empty = lambda: (lambda c: c is not None and len(c) == 0)(read_current_obstacles())  # noqa: E731
+        try:
+            wait(empty, wall_sec=C.SCENE_WAIT_WALL_SEC, what=f'the scene to be removed ({when})')
+            return
+        except Abort:
+            pass
+        left = read_current_obstacles() or []
+        say(f'  {len(left)} obstacle(s) still in Gazebo ({when}), removing them by name: '
+            + ', '.join(o.name for o in left[:8]) + (' ...' if len(left) > 8 else ''))
+        for o in left:
+            ign_remove_model(re.sub(r'_\d+$', '', o.name) if not o.name.startswith('obs_') else o.name)
+        wait(empty, wall_sec=C.SCENE_WAIT_WALL_SEC, what=f'the leftover obstacles to be removed ({when})')
+
     # ---- one environment ------------------------------------------------------------
     def run_env(env_dir):
         env = json.loads((env_dir / 'environment.json').read_text())
         eps = env['episodes'] if args.episodes == 'all' else \
             [e for e in env['episodes'] if e['index'] in {int(i) for i in args.episodes.split(',')}]
         say(f'== {env["environment_id"]} ({env["scenario_name"]}, {env["template"]}): {len(eps)} episode(s)')
+        clear_scene('before spawning')             # nothing from an earlier environment may remain
         teleport(eps[0])
         r = subprocess.run([sys.executable, 'spawn_obstacles.py', str(env_dir / 'scene.yaml')], cwd=str(AC),
                            capture_output=True, text=True)
@@ -494,12 +526,10 @@ def main():
                 rlog.close()
                 shutil.copy(rlog.name, dest / 'record_session.log')
                 say(f'  report: {overall.group(1) if overall else "NO REPORT"}  -> {dest}')
-            subprocess.run([sys.executable, 'spawn_obstacles.py', '--remove'], cwd=str(AC), capture_output=True)
             try:
-                wait(lambda: (lambda c: c is not None and len(c) == 0)(read_current_obstacles()),
-                     wall_sec=C.SCENE_WAIT_WALL_SEC, what='the scene to be removed')
+                clear_scene('after the environment')
             except Abort as e:
-                say(f'  WARNING: {e}')
+                say(f'  WARNING: {e} (tried again before the next environment)')
         say(f'  {env["environment_id"]} done: ' + ', '.join(f'{o}' for o in outcomes))
         if run_log['f'] is not None:
             run_log['f'].close()

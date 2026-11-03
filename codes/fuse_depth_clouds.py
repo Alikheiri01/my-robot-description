@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-fuse_depth_clouds_fast.py -- the same fusion as fuse_depth_clouds.py, fast enough
-to keep up with the cameras (2026-10-24).
+fuse_depth_clouds.py -- fuses the left and right depth clouds into one cloud in
+base_link (fast version of 2026-10-24, pixel stride added 2026-11-02).
+
+PIXEL STRIDE (2026-11-02)
+In a hallway (walls in every pixel, ~540k points per pair) this node took ~340 ms per
+pair on the collection PC and made only ~1.25 fused clouds per wall second, while the
+cameras delivered ~5 per second each: the grid rate in hallways was set by this node
+(MVP grid-rate test, 2026-11-02). It now keeps every PIXEL_STRIDE-th row and column of
+the organized input clouds (a view, no copy), so all later steps get 4x fewer points.
+Effect, checked offline on a ray-cast hallway with a box and a pedestrian, through the
+real fuse() + build_occupancy_grid(): fusion 4x faster; 1.6 % of the known grid cells
+differ, all at obstacle edges (every occupied cell lost has an occupied neighbour).
+Pixel spacing at 8 m becomes ~3 cm, the voxel size, so far walls stay continuous.
+PIXEL_STRIDE = 1 gives exactly the old output.
 
 WHY
 probe_grid_gaps.py showed the fused cloud coming out only ~6 times per simulated
@@ -39,12 +51,14 @@ TARGET_FRAME = 'base_link'
 VOXEL_SIZE = 0.03            # m (unchanged)
 FLOOR_Z_BASE = -0.0925       # true floor height in base_link (unchanged)
 GROUND_FILTER_MARGIN = 0.03  # (unchanged)
+PIXEL_STRIDE = 2             # keep every 2nd row and column of organized clouds (1 = all pixels)
 FLOAT32 = 7                  # sensor_msgs/PointField.FLOAT32
 
 
 # --- pure numpy parts (tested without ROS) ------------------------------------
-def xyz_from_buffer(data, width, height, point_step, row_step, offsets, big_endian=False):
-    """(N, 3) float32 x, y, z straight from PointCloud2 bytes (finite points only)."""
+def xyz_from_buffer(data, width, height, point_step, row_step, offsets, big_endian=False, stride=1):
+    """(N, 3) float32 x, y, z straight from PointCloud2 bytes (finite points only).
+    stride > 1 keeps every stride-th row and column of an ORGANIZED cloud (height > 1)."""
     order = '>' if big_endian else '<'
     dt = np.dtype({'names': ['x', 'y', 'z'], 'formats': [order + 'f4'] * 3,
                    'offsets': list(offsets), 'itemsize': point_step})
@@ -54,6 +68,8 @@ def xyz_from_buffer(data, width, height, point_step, row_step, offsets, big_endi
         buf = np.frombuffer(data, dtype=np.uint8)
         rows = buf[:height * row_step].reshape(height, row_step)[:, :width * point_step]
         pts = np.frombuffer(np.ascontiguousarray(rows).tobytes(), dtype=dt, count=width * height)
+    if stride > 1 and height > 1:
+        pts = pts.reshape(height, width)[::stride, ::stride].reshape(-1)
     xyz = np.empty((pts.shape[0], 3), dtype=np.float32)
     xyz[:, 0], xyz[:, 1], xyz[:, 2] = pts['x'], pts['y'], pts['z']
     return xyz[np.isfinite(xyz).all(axis=1)]
@@ -119,7 +135,7 @@ def main():
             self.fields = [PointField(name=n, offset=4 * i, datatype=FLOAT32, count=1) for i, n in enumerate('xyz')]
             self.n, self.ms = 0, []
             self.create_timer(10.0, self._stats)
-            self.get_logger().info('Depth cloud fuser (fast) started.')
+            self.get_logger().info(f'Depth cloud fuser started (pixel stride {PIXEL_STRIDE}).')
 
         def _to_base(self, msg):
             frame = msg.header.frame_id
@@ -138,7 +154,7 @@ def main():
                 self.get_logger().error('x/y/z are not float32 in the input cloud', throttle_duration_sec=10.0)
                 return None
             xyz = xyz_from_buffer(msg.data, msg.width, msg.height, msg.point_step, msg.row_step,
-                                  (off['x'], off['y'], off['z']), msg.is_bigendian)
+                                  (off['x'], off['y'], off['z']), msg.is_bigendian, PIXEL_STRIDE)
             return apply_transform(xyz, R, t)
 
         def callback(self, left_msg, right_msg):
