@@ -28,6 +28,9 @@ it records, validates and prints the full report when you stop it.
     ros2 launch my_robot_description my_robot_hunav_full.launch.py
     ros2 launch my_robot_description my_robot_hunav_full.launch.py \
         configuration_file:=other_scenario.yaml rviz:=false
+    # unattended collection (2026-11-02): no Gazebo window, no RViz, no crop window --
+    # frees ~3 CPU cores, which the depth pipeline needs to keep the grid rate up
+    ros2 launch my_robot_description my_robot_hunav_full.launch.py gui:=false rviz:=false crop_view:=false
 Ctrl+C stops everything together.
 
 ---- original notes of my_robot_hunav_actor_launch.launch.py ----
@@ -174,6 +177,10 @@ def generate_launch_description():
         DeclareLaunchArgument('crop_view', default_value='true',
                               description='start pedestrian_crop_view_dynamic.py (matplotlib window)'),
         DeclareLaunchArgument('rviz', default_value='true', description='start rviz2 (rviz:=false to skip)'),
+        # NEW (2026-11-02): gui:=false runs Gazebo without its window (server only, '-s'); the
+        # cameras still render. The GUI alone took ~1.4 CPU cores during the MVP grid-rate test.
+        DeclareLaunchArgument('gui', default_value='true',
+                              description='Gazebo window (gui:=false = server only, for unattended runs)'),
         DeclareLaunchArgument('rviz_config', default_value='/home/ali/ros2_ws/src/my_robot_description/rviz/thesis_view.rviz',
                               description='full path of the .rviz file (empty = rviz defaults)'),
     ]
@@ -234,7 +241,9 @@ def generate_launch_description():
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': '-r empty.sdf'}.items(),
+        # CHANGED (2026-11-02): '-s' added when gui:=false
+        launch_arguments={'gz_args': PythonExpression([
+            "'-r empty.sdf' if '", LaunchConfiguration('gui'), "' == 'true' else '-r -s empty.sdf'"])}.items(),
     )
 
     # =========================================================================
