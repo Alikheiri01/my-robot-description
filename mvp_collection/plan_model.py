@@ -230,6 +230,25 @@ def usable_stats(tl, seen):
     return len(T), int(usable.sum()), float(usable.mean())
 
 
+def event_usable_stats(tl, seen, t_event):
+    """NEW (2026-11-03): like usable_stats, but only for the anchors around the event
+    (t_event - EVENT_WINDOW_SEC[0] <= anchor <= t_event + EVENT_WINDOW_SEC[1]): the moments just
+    before the pedestrian goes through the door / round the corner / past the obstacle.
+    Returns (n_anchors, n_usable, share)."""
+    T = kept_anchor_times(tl['t_end'])
+    T = T[(T >= t_event - C.EVENT_WINDOW_SEC[0] - 1e-9) & (T <= t_event + C.EVENT_WINDOW_SEC[1] + 1e-9)]
+    if len(T) == 0:
+        return 0, 0, 0.0
+    dt = tl['dt']
+
+    def at(t):
+        return seen[np.clip(np.round(t / dt).astype(int), 0, len(seen) - 1)]
+
+    hist = np.stack([at(T - k * C.PERIOD_SEC) for k in range(C.HISTORY_STEPS)], 1)
+    usable = hist[:, 0] & (hist.sum(1) >= C.USABLE_MIN_HISTORY_SEEN)
+    return len(T), int(usable.sum()), float(usable.mean())
+
+
 def evaluate(tl, route, robot, obstacles):
     """robot: {'mode': 'still'|'watch'|'follow', 'pose': (x,y,h)} or follow {'dist': d}.
     Returns (robot_xy, robot_h, seen, (n_kept, n_usable, share))."""
