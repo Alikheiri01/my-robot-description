@@ -41,11 +41,14 @@ except Exception:
 PREFIX = 'obs_'
 DEFAULT_HEIGHT = 1.0
 STATE_FILE = HERE / '.spawned_obstacles'      # names spawned last time, for --remove
+# CHANGED (2026-11-03): was 3000 ms. Right after a scene change Gazebo can need longer than 3 s to answer;
+# the model was then often created anyway, the script reported FAILED and did not remember the name.
+IGN_TIMEOUT_MS = 20000
 
 
 def ign(service, reqtype, reptype, req):
     cmd = ['ign', 'service', '-s', service, '--reqtype', reqtype, '--reptype', reptype,
-           '--timeout', '3000', '--req', req]
+           '--timeout', str(IGN_TIMEOUT_MS), '--req', req]
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode == 0 and 'true' in r.stdout, (r.stdout + r.stderr).strip()
 
@@ -100,6 +103,7 @@ def main():
         sys.exit(f'No obstacles in {args.file}.')
     h = heights(args.file)
     spawned = []
+    maybe = []     # CHANGED (2026-11-03): calls that got no answer -- the model may exist anyway, so --remove tries them too
     for o in obstacles:
         sdf = model_sdf(o, h.get(o.name, DEFAULT_HEIGHT))
         ok, out = ign(f'/world/{WORLD_NAME}/create', 'ignition.msgs.EntityFactory', 'ignition.msgs.Boolean',
@@ -108,8 +112,9 @@ def main():
             spawned.append(PREFIX + o.name)
             print(f'  spawned {PREFIX}{o.name}: {o.describe()}')
         else:
+            maybe.append(PREFIX + o.name)
             print(f'  FAILED {o.name}: {out or "no answer (is the simulation running? world name ok?)"}')
-    STATE_FILE.write_text('\n'.join(spawned))
+    STATE_FILE.write_text('\n'.join(spawned + maybe))
     print(f'{len(spawned)}/{len(obstacles)} obstacle(s) in Gazebo, world frame, from {os.path.abspath(args.file)}')
 
 

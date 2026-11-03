@@ -135,6 +135,7 @@ TIMEOUT_FACTOR = 2.0              # abort after this x the planned episode time 
 RESET_SETTLE_SIM_SEC = 1.0        # after a teleport, before the goal is sent
 GATE_WAIT_WALL_SEC = 60.0         # wait at most this long for the start gate to open again
 SCENE_WAIT_WALL_SEC = 180.0       # wait at most this long for the bridge to report a scene change (2026-11-02: was 60; removing 15 models took longer under load)
+SPAWN_ATTEMPTS = 3                # NEW (2026-11-03): scene spawn tries before the environment counts as failed
 RECORD_START_WALL_SEC = 12.0      # time given to record_session.py to start its recorder
 RECORD_STOP_WALL_SEC = 300.0      # time given to record_session.py to write its report
 ROBOT_NAME = 'my_robot'
