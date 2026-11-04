@@ -20,7 +20,7 @@ PER ENVIRONMENT
        (/hunav/episode_goal, path mode for E arcs, slowdown for C)
        walking (> 0.3 m/s)               -> '<id>' on /dataset/episode   (the episode starts)
        1.5 m of route left (A/B/D/E)     -> 'end_<id>'                    (before HuNav brakes)
-       C: arrived, then stood 7.5 s      -> 'end_<id>'
+       C: arrived, then stood STAND_SEC (10 s)     -> 'end_<id>'
        arrival = < 0.1 m/s within 1 m of the goal; abort on timeout or stuck
        event time measured: the pedestrian passes the event's point of the planned route
        (C: the arrival); written to episodes/<id>.json with all planned fields
@@ -384,6 +384,7 @@ def main():
                     sim_sleep(ep['stop']['stand_sec'])
                     node.set_id(f'end_{eid}')
                     meas['t_end_sim'], ended = node.now(), True
+                    sim_sleep(C.END_LABEL_HOLD_SEC)   # NEW: the trace samples at 10 Hz and must see 'end_<id>'
             if arrived and ended:
                 meas['outcome'] = 'ok'
                 break
