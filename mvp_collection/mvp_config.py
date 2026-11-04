@@ -38,7 +38,8 @@ EVENT_OBSTACLE_GAP_M = 1.1       # A: the free side of the obstacle is at least 
 # Scenario C (designed slowdown, see the spec): v(d) = v0 * sqrt(d / SLOWDOWN_DISTANCE_M)
 SLOWDOWN_DISTANCE_RANGE = (1.0, 2.5)
 STOP_GAP_RANGE = (0.5, 0.9)      # pedestrian centre -> wall face at the stop point
-STAND_SEC = 7.5                  # standing time before 'end': >= 6 s future + margins
+STAND_SEC = 10.0                 # standing time before 'end': 6 s future + 3.5 s of standing samples
+END_LABEL_HOLD_SEC = 0.6   # C only: how long the 'end_<id>' label stays before the next step (trace sampling)
 
 # ----------------------------------------------------------------------------
 # Camera (depth_camera.xacro) and the "seen" model used for planning

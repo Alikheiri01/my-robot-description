@@ -903,7 +903,12 @@ def main():
     ap.add_argument('--dataset', default='dev', help='dataset folder name under datasets/ (default: dev)')
     ap.add_argument('--out', default=None, help='explicit output folder (overrides --dataset)')
     ap.add_argument('--no-preview', action='store_true')
+    ap.add_argument('--stand-sec', type=float, default=None,
+                    help='scenario C: standing time at the stop in s (default: STAND_SEC in mvp_config.py, 10). '
+                         'Use e.g. 20 for a test that needs many standing samples.')
     args = ap.parse_args()
+    if args.stand_sec is not None:
+        C.STAND_SEC = args.stand_sec
     if not args.all and not args.scenario:
         sys.exit('Give --scenario A|B|C|D|E or --all')
     scen = list(C.SCENARIOS) if args.all else [args.scenario]
