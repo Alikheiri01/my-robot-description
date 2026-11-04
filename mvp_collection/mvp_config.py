@@ -25,7 +25,7 @@ END_MARGIN_SEC = FUTURE_STEPS * PERIOD_SEC + EPISODE_MARGIN_SEC            # 6.5
 # Episodes
 # ----------------------------------------------------------------------------
 EPISODES_PER_ENV = 6
-SPEED_RANGE = (0.6, 1.4)         # m/s, uniform per episode
+SPEED_RANGE = (0.8, 1.5)         # m/s, uniform per episode (2026-11-04: was 0.6-1.4; normal indoor walking is 1.2-1.4 m/s)
 BEFORE_EVENT_SEC = 12.0          # walking time from the walk start to the event (>=)
 AFTER_EVENT_SEC = 8.0            # walking time from the event to the episode end (>=)
 # The episode ends ('end' id published) while the pedestrian still walks at full speed:
@@ -58,7 +58,7 @@ ROBOT_WALL_CLEAR_M = 0.7         # parked robot centre -> any wall/obstacle (202
 ROBOT_PATH_CLEAR_M = 0.45        # follow: the robot's track keeps this from every wall (radius + 0.1)
 ROBOT_ROUTE_CLEAR_M = 1.2        # parked robot centre -> pedestrian route (HuNav reacts to the robot)
 ROBOT_START_CLEAR_M = 1.5        # robot centre -> pedestrian start / goal
-ROBOT_VMAX = 1.5                 # m/s (follow mode) (2026-11-02: was 0.8, an assumption; DiffDrive allows 4.0, pedestrians walk up to 1.4)
+ROBOT_VMAX = 2.0                 # m/s (follow mode) (2026-11-04: was 1.5; pedestrians walk up to 1.5 now. 2026-11-02: was 0.8, an assumption; DiffDrive allows 4.0)
 ROBOT_WMAX = 1.0                 # rad/s (watch and follow)
 WATCH_DEADBAND = math.radians(10.0)   # watch: turn when the pedestrian is further than this off axis
 WATCH_GAIN = 2.0                 # rad/s per rad of heading error
