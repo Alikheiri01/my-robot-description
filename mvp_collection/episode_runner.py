@@ -96,9 +96,9 @@ def ign_set_pose(name, x, y, z, yaw):
 def ign_remove_model(name):
     """Removes one model from Gazebo by name. True if Gazebo answered true."""
     cmd = ['ign', 'service', '-s', f'/world/{WORLD_NAME}/remove', '--reqtype', 'ignition.msgs.Entity',
-           '--reptype', 'ignition.msgs.Boolean', '--timeout', '3000', '--req', f'name: "{name}" type: MODEL']
+           '--reptype', 'ignition.msgs.Boolean', '--timeout', '8000', '--req', f'name: "{name}" type: MODEL']
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=6.0)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=12.0)   # CHANGED (2026-11-05): was 3 s / 6 s
     except subprocess.TimeoutExpired:
         return False
     return 'true' in r.stdout
@@ -121,6 +121,15 @@ def ign_model_pose(name):
     return x, y, z, yaw
 
 
+def run_passed(run_dir):
+    """True if the run folder's report.txt says OVERALL: PASS."""
+    rep = Path(run_dir) / 'report.txt'
+    try:
+        return bool(re.search(r'OVERALL: PASS', rep.read_text()))
+    except OSError:
+        return False
+
+
 def read_current_obstacles():
     try:
         from world_obstacles import load_obstacles
@@ -136,6 +145,10 @@ def main():
     ap.add_argument('--no-record', action='store_true', help='play only, do not run record_session.py')
     ap.add_argument('--skip-done', action='store_true', help='skip environments that already have a recorded run')
     ap.add_argument('--gif', action='store_true', help='the trace also writes one animation per episode (slow)')
+    ap.add_argument('--max-envs', type=int, default=0,
+                    help='NEW (2026-11-05): stop after this many environments (0 = no limit); run_collection.sh '
+                         'restarts Gazebo between such batches. Exit code: 0 all done, 3 more to do, 2 more to do '
+                         'but nothing worked in this batch')
     args = ap.parse_args()
 
     env_dirs = []
@@ -148,7 +161,12 @@ def main():
     if not env_dirs:
         sys.exit('No environment folders given (folders with environment.json).')
     if args.skip_done:
-        env_dirs = [d for d in env_dirs if not any((r / 'report.txt').exists() for r in (d / 'runs').glob('*'))]
+        # CHANGED (2026-11-05): 'done' = a run whose report says OVERALL: PASS. Before, any report counted, so an
+        # environment whose episodes were all aborted (simulation in a bad state) was skipped as done.
+        env_dirs = [d for d in env_dirs if not any(run_passed(r) for r in (d / 'runs').glob('*'))]
+    if not env_dirs:                      # NEW (2026-11-05): everything already recorded
+        print('Nothing to do: every environment already has a recorded run.')
+        sys.exit(0)
     # session logs go to the dataset of the first environment: datasets/<dataset>/logs
     LOG_DIR = env_dirs[0].parents[1] / 'logs'
     LOG_DIR.mkdir(exist_ok=True)
@@ -287,7 +305,7 @@ def main():
     say(f'robot_driver.py started (log {drv_log.name})')
     try:
         wait(lambda: node.ped_pos() is not None and node.robot is not None,
-             wall_sec=30, what='pedestrian pose and /odom (is the launch running?)')
+             wall_sec=90, what='pedestrian pose and /odom (is the launch running?)')   # CHANGED (2026-11-05): was 30
         node.robot_cmd({'mode': 'stop'})
         sim_sleep(1.0)
         rest = ign_model_pose(C.ROBOT_NAME)
@@ -448,6 +466,13 @@ def main():
         eps = env['episodes'] if args.episodes == 'all' else \
             [e for e in env['episodes'] if e['index'] in {int(i) for i in args.episodes.split(',')}]
         say(f'== {env["environment_id"]} ({env["scenario_name"]}, {env["template"]}): {len(eps)} episode(s)')
+        # NEW (2026-11-05): runs of an earlier try that did not pass are moved aside (runs_failed/), so runs/
+        # holds only passed runs and the dataset is never built from a failed one
+        for old in sorted((env_dir / 'runs').glob('*')):
+            if old.is_dir() and not run_passed(old):
+                (env_dir / 'runs_failed').mkdir(exist_ok=True)
+                shutil.move(str(old), str(env_dir / 'runs_failed' / old.name))
+                say(f'  earlier run {old.name} did not pass: moved to runs_failed/')
         clear_scene('before spawning')             # nothing from an earlier environment may remain
         teleport(eps[0])
         n_want = len(env['obstacles'])
@@ -456,7 +481,10 @@ def main():
         # a spawn call within 3 s ('Service call timed out'); then the scene is cleared and
         # spawned again, up to SPAWN_ATTEMPTS times, before the environment counts as failed.
         for attempt in range(1, C.SPAWN_ATTEMPTS + 1):
-            r = subprocess.run([sys.executable, 'spawn_obstacles.py', str(env_dir / 'scene.yaml')], cwd=str(AC),
+            # NEW (2026-11-05): spawn_obstacles.py creates the scene with one create_multiple call; the last
+            # attempt falls back to one create call per obstacle (the old way), in case that service fails
+            one = ['--one-by-one'] if (attempt == C.SPAWN_ATTEMPTS and attempt > 1) else []
+            r = subprocess.run([sys.executable, 'spawn_obstacles.py', str(env_dir / 'scene.yaml')] + one, cwd=str(AC),
                                capture_output=True, text=True)
             fail = None
             if f'{n_want}/{n_want} obstacle(s)' not in r.stdout:
@@ -540,7 +568,10 @@ def main():
                     os.killpg(rec.pid, signal.SIGKILL)
                 rep = run_dir / 'report.txt'
                 overall = re.search(r'OVERALL: (.*)', rep.read_text()) if rep.exists() else None
-                dest = env_dir / 'runs' / run_dir.name
+                # NEW (2026-11-05): a run with an aborted / stuck / timed-out episode is not a good run, whatever
+                # its report says: it goes to runs_failed/ and the environment is recorded again next time
+                bad_run = any(o not in ('ok', 'ok_late_end') for o in outcomes)
+                dest = env_dir / ('runs_failed' if bad_run else 'runs') / run_dir.name
                 dest.parent.mkdir(exist_ok=True)
                 shutil.move(str(run_dir), str(dest))
                 rlog.close()
@@ -557,10 +588,16 @@ def main():
         return outcomes
 
     summary = []
+    n_run = 0
+    remaining = False
     try:
         for d in env_dirs:
             if stop['flag']:
                 break
+            if args.max_envs and n_run >= args.max_envs:
+                remaining = True
+                continue
+            n_run += 1
             try:
                 summary.append((d.name, run_env(d)))
             except Abort as e:
@@ -574,11 +611,20 @@ def main():
         except subprocess.TimeoutExpired:
             driver.kill()
         say('SUMMARY: ' + '; '.join(f'{n}: {"/".join(o)}' for n, o in summary))
+        n_good = sum(1 for _, o in summary if o != ['failed'] and 'aborted' not in o)
+        failed = [n for n, o in summary if o == ['failed'] or 'aborted' in o]
+        if failed:
+            say(f'NOT DONE: {", ".join(failed)} -- run the same command again with --skip-done to retry them')
         executor.shutdown(timeout_sec=2.0)
         spin_thread.join(timeout=5.0)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+    # exit code for run_collection.sh: 0 = nothing left, 3 = more to do (progress made), 2 = more to do, no progress
+    todo = remaining or bool(failed)
+    if stop['flag']:
+        sys.exit(130)
+    sys.exit(0 if not todo else (3 if n_good > 0 else 2))
 
 
 if __name__ == '__main__':
