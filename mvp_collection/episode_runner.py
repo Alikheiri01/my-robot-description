@@ -130,6 +130,21 @@ def run_passed(run_dir):
         return False
 
 
+def failed_tries(env_dir):
+    """NEW (2026-11-06): how often this environment was tried without getting a passed run: run folders in
+    runs_failed/, run folders in runs/ that did not pass, and the lines of attempts.log (spawn failures)."""
+    n = 0
+    for sub, only_bad in (('runs_failed', False), ('runs', True)):
+        p = env_dir / sub
+        if p.is_dir():
+            n += sum(1 for r in p.iterdir() if r.is_dir() and not (only_bad and run_passed(r)))
+    try:
+        n += len((env_dir / 'attempts.log').read_text().splitlines())
+    except OSError:
+        pass
+    return n
+
+
 def read_current_obstacles():
     try:
         from world_obstacles import load_obstacles
@@ -149,6 +164,9 @@ def main():
                     help='NEW (2026-11-05): stop after this many environments (0 = no limit); run_collection.sh '
                          'restarts Gazebo between such batches. Exit code: 0 all done, 3 more to do, 2 more to do '
                          'but nothing worked in this batch')
+    ap.add_argument('--max-tries', type=int, default=3,
+                    help='NEW (2026-11-06): with --skip-done, an environment that failed this many times without a '
+                         'passed run is given up (listed, not tried again). 99 = never give up')
     args = ap.parse_args()
 
     env_dirs = []
@@ -163,9 +181,21 @@ def main():
     if args.skip_done:
         # CHANGED (2026-11-05): 'done' = a run whose report says OVERALL: PASS. Before, any report counted, so an
         # environment whose episodes were all aborted (simulation in a bad state) was skipped as done.
-        env_dirs = [d for d in env_dirs if not any(run_passed(r) for r in (d / 'runs').glob('*'))]
+        todo_dirs, given_up = [], []
+        for d in env_dirs:
+            if any(run_passed(r) for r in (d / 'runs').glob('*')):
+                continue
+            n_failed = failed_tries(d)
+            if n_failed >= args.max_tries:       # NEW (2026-11-06): an environment that always fails must not block the rest
+                given_up.append(f'{d.name} ({n_failed}x)')
+            else:
+                todo_dirs.append(d)
+        env_dirs = todo_dirs
+        if given_up:
+            print(f'GIVEN UP (failed {args.max_tries}+ times, not tried again; --max-tries 99 to retry): '
+                  + ', '.join(given_up))
     if not env_dirs:                      # NEW (2026-11-05): everything already recorded
-        print('Nothing to do: every environment already has a recorded run.')
+        print('Nothing to do: every other environment already has a recorded run.')
         sys.exit(0)
     # session logs go to the dataset of the first environment: datasets/<dataset>/logs
     LOG_DIR = env_dirs[0].parents[1] / 'logs'
@@ -603,6 +633,11 @@ def main():
             except Abort as e:
                 say(f'{d.name}: ENVIRONMENT FAILED: {e}')
                 summary.append((d.name, ['failed']))
+                try:                                  # counted by failed_tries() (no run folder exists for it)
+                    with open(d / 'attempts.log', 'a') as f:
+                        f.write(f'{time.strftime("%Y%m%d_%H%M%S")} {e}\n')
+                except OSError:
+                    pass
     finally:
         node.robot_cmd({'mode': 'stop'})
         driver.send_signal(signal.SIGINT)
