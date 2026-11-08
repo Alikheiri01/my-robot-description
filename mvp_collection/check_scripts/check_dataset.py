@@ -82,14 +82,36 @@ def load_dataset(root):
     return scenarios
 
 
+def flatten(d, prefix=''):
+    """Numeric entries of a nested dict -> {'a.b': value}; booleans and lists are skipped."""
+    o = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            o.update(flatten(v, prefix + k + '.'))
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            o[prefix + k] = float(v)
+    return o
+
+
 def load_env(env_dir):
     """-> (info dict, list of sample dicts). info['status'] explains an environment without passed run."""
     env = json.loads((env_dir / 'environment.json').read_text())
     info = {'name': env_dir.name, 'template': env.get('template', '?'), 'n_obst': len(env.get('obstacles', [])),
             'eps': {e['episode_id']: e for e in env['episodes']}, 'status': 'ok', 'run': None, 'meas': {}}
+    info['params'] = flatten(env.get('params', {}))
     runs = [r for r in sorted((env_dir / 'runs').glob('*')) if r.is_dir() and run_passed(r)] \
         if (env_dir / 'runs').is_dir() else []
     n_failed = len(list((env_dir / 'runs_failed').glob('*'))) if (env_dir / 'runs_failed').is_dir() else 0
+    info['n_failed'] = n_failed
+    info['failed_eps'] = []                      # episodes of the newest failed run: (id, outcome, t_end)
+    if n_failed:
+        fr = sorted(p for p in (env_dir / 'runs_failed').glob('*') if p.is_dir())[-1]
+        for f in sorted((fr / 'episodes').glob('*.json')):
+            try:
+                m = json.loads(f.read_text()).get('measured', {})
+                info['failed_eps'].append((f.stem, m.get('outcome', '?'), m.get('t_end_after_walk_start_sec')))
+            except (OSError, ValueError):
+                pass
     if not runs:
         info['status'] = f'no passed run ({n_failed} failed run(s) in runs_failed/)'
         return info, []
@@ -295,14 +317,18 @@ def main():
     rate = {k: pct(v[1], v[0]) for k, v in res.items()}
     stated = rate[(False, False)]
     controls = {combos[k]: rate[k] for k in rate if k != (False, False)}
-    best_other = min(controls.values())
-    lvl = 'PASS' if stated <= 1.0 and best_other > 2 * max(stated, 0.2) else ('WARN' if stated <= 1.0 else 'FAIL')
+    best_other = min(res[k][1] for k in res if k != (False, False))          # fewest hits among the mirrored crops
+    n_stated = res[(False, False)][1]
+    # PASS when the stated crop is clean (<= 1 %) AND every mirrored crop has clearly more label points in obstacles
+    # (at least 20 points and 10 times as many): then the check can tell the orientation and the stated one is right.
+    separated = best_other >= max(20, 10 * n_stated)
+    lvl = 'PASS' if stated <= 1.0 and separated else ('WARN' if stated <= 1.0 else 'FAIL')
     levels.append(verdict(lvl, 'label never in an obstacle',
-                          f'{res[(False, False)][1]} of {res[(False, False)][0]} future points in the crop are in an occupied cell '
-                          f'= {stated:.2f} % (limit 1 %). Control with a mirrored crop: ' +
-                          ', '.join(f'{k} {v:.1f} %' for k, v in controls.items())))
+                          f'{n_stated} of {res[(False, False)][0]} future points in the crop are in an occupied cell '
+                          f'= {stated:.2f} % (limit 1 %). Mirrored crops (control): ' +
+                          ', '.join(f'{combos[k]} {res[k][1]} points = {rate[k]:.2f} %' for k in rate if k != (False, False))))
     if lvl == 'WARN':
-        out('         (the mirrored crops are just as clean, so this check cannot tell the orientation; it is not a data problem)')
+        out('         (a mirrored crop is nearly as clean, so this check cannot tell the orientation; not a data problem)')
     flip = min(rate, key=rate.get)           # the orientation the plots use (the cleanest one)
     if flip != (False, False):
         out(f'         NOTE: the cleanest orientation is "{combos[flip]}", not the stated one -- plots use it; tell Claude.')
@@ -469,6 +495,107 @@ def main():
         sp = np.array(sorted({(r['env'], r['ep']): r['speed_plan'] for r in rs if r['speed_plan'] is not None}.values()))
         if len(sp):
             out(f'  {sc:10s} min {sp.min():.2f}  p25 {np.percentile(sp, 25):.2f}  median {np.median(sp):.2f}  p75 {np.percentile(sp, 75):.2f}  max {sp.max():.2f}')
+
+    out()
+    out('  -- B6b bend direction of the label (usable samples with |y| at 6 s > 1 m): left / right share')
+    for sc, rs in S.items():
+        u = [r for r in rs if r['usable'] and abs(r['fut'][-1, 1]) > 1.0]
+        if u:
+            left = sum(r['fut'][-1, 1] > 0 for r in u)
+            out(f'  {sc:10s} n={len(u):5d}   left {pct(left, len(u)):5.1f} %   right {pct(len(u) - left, len(u)):5.1f} %'
+                f'   (a mirror augmentation is only needed when one side is rare)')
+
+    out()
+    out('  -- B11 can the crop SEE where the event happens? (usable samples with the event in the 6 s future)')
+    out('     event point = where the label is at the event time (interpolated). known = cell is not unknown (grey).')
+    out(f'  {"scenario":10s} {"n":>6s} {"event point in crop":>20s} {"on a known cell":>16s} {"1 m disk >= 50% known":>22s} '
+        f'{"occupied within 1 m":>20s}   disk known by time to event: 0-2 s / 2-4 s / 4-6 s')
+    for sc, rs in S.items():
+        ev_rows = [r for r in rs if r['usable'] and r['ev_future'] and r['t_ev'] is not None]
+        if not ev_rows:
+            continue
+        n_in = n_known = n_disk = n_occ = 0
+        by_tau = {0: [0, 0], 1: [0, 0], 2: [0, 0]}
+        for r in ev_rows:
+            tau = min(max(r['t_ev'] - r['t'], 0.0), N_FUT * DT)
+            pts = np.vstack([[0, 0], r['fut'][:, :2]])
+            k = min(int(tau // DT), N_FUT - 1)
+            frac = (tau - k * DT) / DT
+            p = pts[k] + frac * (pts[k + 1] - pts[k])
+            cx, cy = int(np.floor((p[0] - X0) / CROP_RES)), int(np.floor((p[1] - Y0) / CROP_RES))
+            if flip[0]:
+                cx = 79 - cx
+            if flip[1]:
+                cy = 79 - cy
+            b = min(int(tau // 2), 2)
+            by_tau[b][1] += 1
+            if not (0 <= cx < 80 and 0 <= cy < 80):
+                continue
+            n_in += 1
+            c = crops[r['idx']]
+            n_known += c[cy, cx] != -1
+            y0_, y1_, x0_, x1_ = max(cy - 10, 0), min(cy + 11, 80), max(cx - 10, 0), min(cx + 11, 80)
+            win = c[y0_:y1_, x0_:x1_]
+            yy, xx = np.mgrid[y0_:y1_, x0_:x1_]
+            disk = (yy - cy) ** 2 + (xx - cx) ** 2 <= 100
+            good = (win[disk] != -1).mean() >= 0.5
+            n_disk += good
+            n_occ += bool((win[disk] == 100).any())
+            by_tau[b][0] += good
+        n = len(ev_rows)
+        out(f'  {sc:10s} {n:6d} {pct(n_in, n):19.1f}% {pct(n_known, n):15.1f}% {pct(n_disk, n):21.1f}% {pct(n_occ, n):19.1f}%   '
+            + ' / '.join(f'{pct(*by_tau[b]):4.0f} %' for b in range(3)))
+    out('     Reading: if the cause of the behaviour (corner, wall, door) is mostly on unknown cells, the crop cannot explain it '
+        'and a null result says nothing about the idea. In hallways walls are always within 1 m, so "occupied within 1 m" '
+        'proves little; the known-cell columns are the ones that matter.')
+
+    out()
+    out('  -- B12 environments without a passed run: what do they share?')
+    any_failed = False
+    for sc, infos in env_infos.items():
+        passed = [i for i in infos if i['run'] is not None]
+        for i in infos:
+            if i['run'] is not None:
+                continue
+            any_failed = True
+            out(f'  {sc} {i["name"]}: {i["n_failed"]} failed run(s); newest failed run:')
+            for eid, o, t_end in i['failed_eps']:
+                ep = i['eps'].get(eid, {})
+                out(f'      {eid[-3:]:4s} {o:8s} speed {ep.get("speed", 0):.2f} m/s, robot {ep.get("robot", {}).get("mode", "?"):7s}'
+                    f' ended at {t_end} s (planned {ep.get("planned", {}).get("t_end_sec", "?")} s)')
+            odd = []
+            for k, v in sorted(i['params'].items()):
+                vals = np.array([q['params'][k] for q in passed if k in q['params']])
+                if len(vals) < 5:
+                    continue
+                rank = pct(int((vals < v).sum()) + 0.5 * int((vals == v).sum()), len(vals))
+                if rank <= 10 or rank >= 90:
+                    odd.append(f'{k} = {v:.2f} (passed envs: {vals.min():.2f} .. {vals.max():.2f}, this one is at the {rank:.0f}th percentile)')
+            out('      unusual parameters: ' + ('; '.join(odd) if odd else 'none (all inside the 10 .. 90 percentile of the passed environments)'))
+    if not any_failed:
+        out('  none')
+    out('     Survivorship: whatever makes an environment fail (slow pedestrian + tight passage?) is missing from the dataset.')
+
+    A_envs = [i for i in env_infos.get('A_detour', []) if i['run'] is not None and 'event_obstacle.across' in i['params']]
+    if A_envs:
+        out()
+        out('  -- B13 scenario A: how much of the hallway does the event obstacle block, and how far does the label bend?')
+        ratio, bend = [], []
+        for i in A_envs:
+            ys = [abs(r['fut'][-1, 1]) for r in S['A_detour'] if r['env'] == i['name'] and r['usable'] and r['ev_future']]
+            if ys:
+                ratio.append(i['params']['event_obstacle.across'] / i['params']['hall_width'])
+                bend.append(np.median(ys))
+        ratio, bend = np.array(ratio), np.array(bend)
+        if len(ratio) >= 6:
+            q = np.percentile(ratio, [33, 66])
+            groups = [('small', ratio <= q[0]), ('medium', (ratio > q[0]) & (ratio <= q[1])), ('large', ratio > q[1])]
+            out(f'     blocked share of the hallway width (obstacle across / hall width): median {np.median(ratio):.2f}, '
+                f'min {ratio.min():.2f}, max {ratio.max():.2f}')
+            for name, m in groups:
+                out(f'     {name:7s} obstacle ({ratio[m].min():.2f} .. {ratio[m].max():.2f} of the width): {int(m.sum())} environments, '
+                    f'median |y| of the label at 6 s = {np.median(bend[m]):.2f} m')
+            out('     Reading: a small obstacle in a wide hallway needs almost no detour, so CVM is hardly wrong.')
 
     out()
     out('  -- B10 suggested split by ENVIRONMENT (never by sample: neighbouring samples are almost the same scene)')
