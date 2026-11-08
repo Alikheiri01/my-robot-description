@@ -20,6 +20,10 @@ Per seed and per fold k (5 folds, grouped by environment, stratified by scenario
 Variants: full | hist (no crop, same depth) | noocc (obstacles shown as free) | concat (simple fusion) | robot
           each also as  <name>_direct  = the network outputs the path itself instead of a correction to CVM
 Outputs in --out (default runs/):  oof_<variant>_s<seed>.npz  (+ _shufscn.npz, _shufall.npz)   keys: ids, pred (M,12,2)
+                                   models/<variant>_s<seed>_f<fold>.pt  (trained weights, needed for the pictures and H8)
+A seed whose oof file already exists is skipped, so an interrupted run can simply be started again.
+The dataset argument can be a dataset folder OR a packed file made by pack_dataset.py (used on Kaggle/Colab).
+Device: --device auto (default) uses the GPU if there is one, otherwise the CPU.
 """
 import argparse
 import copy
@@ -62,6 +66,11 @@ def shuffle_partner(ds, te, within_scenario, seed):
     return partner
 
 
+def as_idx(j, dev):
+    """index array -> long tensor on the device (works the same on CPU and GPU)"""
+    return torch.as_tensor(np.asarray(j), dtype=torch.long, device=dev)
+
+
 def make_tensors(ds, dev):
     return dict(hist=torch.tensor(ds['hist'], device=dev), crop=torch.tensor(ds['crop'], device=dev),
                 fut=torch.tensor(ds['fut'], device=dev), robot=torch.tensor(ds['robot'], device=dev))
@@ -71,17 +80,19 @@ def make_tensors(ds, dev):
 def predict(model, T, idx, crop_idx=None, bs=512):
     """crop_idx: use the crops of these samples instead (for the shuffle tests)."""
     model.eval()
+    dev = T['hist'].device
     out = []
     for i in range(0, len(idx), bs):
-        j = idx[i:i + bs]
-        cj = j if crop_idx is None else crop_idx[i:i + bs]
+        j = as_idx(idx[i:i + bs], dev)
+        cj = j if crop_idx is None else as_idx(crop_idx[i:i + bs], dev)
         out.append(model(T['hist'][j], T['crop'][cj], T['robot'][j]).cpu())
     return torch.cat(out).numpy()
 
 
 def ade_of(model, T, idx):
-    p = torch.tensor(predict(model, T, idx), device=T['fut'].device)
-    return (p - T['fut'][idx][:, :, :2]).norm(dim=2).mean().item()
+    dev = T['fut'].device
+    p = torch.tensor(predict(model, T, idx), device=dev)
+    return (p - T['fut'][as_idx(idx, dev)][:, :, :2]).norm(dim=2).mean().item()
 
 
 def train_one(args, T, tr, va, seed, dev):
@@ -97,7 +108,7 @@ def train_one(args, T, tr, va, seed, dev):
         perm = np.random.permutation(tr)
         tot, nb = 0.0, 0
         for i in range(0, len(perm), args.bs):
-            j = perm[i:i + args.bs]
+            j = as_idx(perm[i:i + args.bs], dev)
             h, c, f, r = T['hist'][j], T['crop'][j], T['fut'][j], T['robot'][j]
             if not args.no_flip:
                 m = torch.rand(len(j), device=dev) < 0.5
@@ -143,19 +154,31 @@ def main():
     ap.add_argument('--wd', type=float, default=1e-2)
     ap.add_argument('--no-flip', action='store_true')
     ap.add_argument('--out', default='runs')
-    ap.add_argument('--device', default='auto')
+    ap.add_argument('--device', default='auto', help='auto (GPU if there is one, else CPU) | cpu | cuda')
+    ap.add_argument('--redo', action='store_true', help='train again even if the output file of a seed already exists')
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
-    dev = torch.device('cuda' if (args.device == 'auto' and torch.cuda.is_available()) else
-                       ('cpu' if args.device == 'auto' else args.device))
+    if args.device == 'auto':
+        dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        dev = torch.device(args.device)
+        if dev.type == 'cuda' and not torch.cuda.is_available():
+            sys.exit('--device cuda was asked for, but no GPU is available here (use --device cpu or auto)')
     ds = load_dataset(args.dataset, folds=args.folds, cache_dir=args.out)
     T = make_tensors(ds, dev)
     u = ds['usable']
     out = Path(args.out)
+    if args.fold is not None:                      # a smoke run never mixes with real results
+        out = out / 'smoke'
     out.mkdir(parents=True, exist_ok=True)
-    print(f'[train] variant {args.variant}  device {dev}  parameters {count_params(VARIANTS[args.variant]())}')
+    gpu = f' ({torch.cuda.get_device_name(dev)})' if dev.type == 'cuda' else ''
+    print(f'[train] variant {args.variant}  device {dev}{gpu}  parameters {count_params(VARIANTS[args.variant]())}')
     uses_crop = not args.variant.startswith('hist')
+    (out / 'models').mkdir(exist_ok=True)
     for seed in [int(s) for s in args.seeds.split(',')]:
+        if (out / f'oof_{args.variant}_s{seed}.npz').exists() and args.fold is None and not args.redo:
+            print(f'[train] seed {seed}: {out / f"oof_{args.variant}_s{seed}.npz"} exists, skipped (--redo to train again)')
+            continue
         pred = np.full((len(u), 12, 2), np.nan, np.float32)
         p_scn, p_all = pred.copy(), pred.copy()
         t0 = time.time()
@@ -165,9 +188,10 @@ def main():
             tr, va = np.nonzero(tr_m)[0], np.nonzero(va_m)[0]
             model, best = train_one(args, T, tr, va, seed, dev)
             pred[te] = predict(model, T, te)
+            torch.save(model.state_dict(), out / 'models' / f'{args.variant}_s{seed}_f{k}.pt')
             if uses_crop:
-                p_scn[te] = predict(model, T, te, crop_idx=torch.tensor(shuffle_partner(ds, te, True, seed), device=dev))
-                p_all[te] = predict(model, T, te, crop_idx=torch.tensor(shuffle_partner(ds, te, False, seed), device=dev))
+                p_scn[te] = predict(model, T, te, crop_idx=shuffle_partner(ds, te, True, seed))
+                p_all[te] = predict(model, T, te, crop_idx=shuffle_partner(ds, te, False, seed))
             err = np.linalg.norm(pred[te] - ds['fut'][te, :, :2], axis=2).mean()
             print(f'[train] seed {seed} fold {k}: train {len(tr)}  val {len(va)}  test {len(te)}  '
                   f'val ADE {best:.3f}  test ADE@6s {err:.3f}   ({time.time() - t0:.0f} s)')

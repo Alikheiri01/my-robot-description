@@ -106,8 +106,18 @@ def _scan(root):
 
 
 def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=True):
-    """Loads all samples. The cache (a single .npz inside cache_dir, NOT inside the dataset) makes reloading fast."""
+    """Loads all samples from a dataset folder (or from a packed .npz file, see pack_dataset.py).
+    The cache (a single .npz inside cache_dir, NOT inside the dataset) makes reloading a folder fast."""
     root = Path(root)
+    if root.is_file():                                   # a packed dataset made by pack_dataset.py (one .npz file)
+        z = np.load(root, allow_pickle=False)
+        ds = {k: z[k] for k in z.files if k != 'sig'}
+        if verbose:
+            print(f'[data] loaded packed dataset {root} ({len(ds["ids"])} samples, '
+                  f'{int(ds["usable"].sum())} usable, {int(ds["fold"].max()) + 1} folds)')
+        if int(ds['fold'].max()) + 1 != folds:
+            print(f'[data] WARNING: the file was packed with {int(ds["fold"].max()) + 1} folds, you asked for {folds}')
+        return ds
     found = _scan(root)
     if not found:
         raise SystemExit(f'no environment with a passed run under {root}')
