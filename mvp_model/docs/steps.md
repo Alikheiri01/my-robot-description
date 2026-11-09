@@ -3,6 +3,9 @@
 Status is binary: "done" / "not done". A step is done only when its pass line is true. Commit only when a step is truly done (short message, no co-author lines, e.g. "added model code and tests").
 For every step: **Do** (the commands), **Expect** (what you will see), **Pass**, **If not**. My guesses about results are marked "guess": they are expectations, not promises.
 
+## Where things run
+Your laptop: M1 (tests, baselines), packing the data, and all evaluation (numpy, light). **Kaggle (GPU): M2 smoke runs and all training** (M3, M4). Full guide: `kaggle-guide.md`. The training code is device-agnostic (`--device auto` = GPU if there is one, else CPU).
+
 ## Folder layout (`my_robot_description/mvp_model/`)
 ```
 mvp_model/
@@ -17,8 +20,11 @@ mvp_model/
   tests/
     test_all.py        data layer + evaluation + planted effects + mirror (numpy only)
     test_torch.py      the networks run, mirror in torch (needs torch)
-  docs/              model-spec.md  evaluation-plan.md  steps.md  architecture.png
-  runs/              generated: predictions and cache   (not committed)
+  pack_dataset.py    packs a dataset folder into ONE file for Kaggle/Colab
+  kaggle/            kaggle_train.ipynb (notebook for Kaggle and Colab)
+  docs/              model-spec.md  evaluation-plan.md  steps.md  kaggle-guide.md  architecture.png
+  runs/              generated: predictions, trained weights, logs, cache   (not committed)
+  packed/            generated: the packed data file   (not committed)
   reports/           generated: evaluation reports
 ```
 The versions: `full`, `hist`, `noocc`, `concat` (residual style = correction on top of CVM) and the same four with `_direct` (the network outputs the path itself). Residual is the primary family, direct the secondary comparison.
