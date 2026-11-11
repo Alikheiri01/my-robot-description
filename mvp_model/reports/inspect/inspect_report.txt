@@ -1,0 +1,31 @@
+B near: 668 samples
+C near: 717 samples
+A all: 1632 samples
+E all: 1624 samples
+self-check: largest difference to the stored out-of-fold predictions: 5.71e-03 m (ok)
+
+DAMAGED INPUT: ADE@3s [m], mean and 95 % interval (bootstrap over environments), same samples in every row
+                                          B near                C near                 A all                 E all
+clean (reference)               0.19 [0.17,0.20]      0.19 [0.16,0.22]      0.11 [0.10,0.12]      0.05 [0.05,0.06]
+map: none                       0.57 [0.53,0.60]      0.75 [0.71,0.79]      0.17 [0.15,0.19]      0.14 [0.10,0.18]
+map: shifted 0.2 m              0.37 [0.34,0.40]      0.21 [0.17,0.25]      0.13 [0.12,0.14]      0.06 [0.06,0.07]
+map: shifted 0.5 m              0.44 [0.42,0.48]      0.25 [0.22,0.29]      0.14 [0.13,0.15]      0.07 [0.06,0.08]
+map: 1 % wrong cells            0.20 [0.18,0.22]      0.19 [0.16,0.22]      0.11 [0.11,0.12]      0.05 [0.05,0.06]
+map: 5 % wrong cells            0.28 [0.26,0.30]      0.20 [0.17,0.24]      0.13 [0.12,0.15]      0.06 [0.06,0.07]
+map: rotated 5 deg              0.29 [0.26,0.32]      0.19 [0.16,0.23]      0.12 [0.11,0.13]      0.06 [0.05,0.06]
+map: rotated 10 deg             0.37 [0.34,0.41]      0.21 [0.18,0.24]      0.14 [0.13,0.15]      0.07 [0.06,0.07]
+history noise 0.05 m            0.29 [0.27,0.31]      0.31 [0.28,0.35]      0.19 [0.18,0.20]      0.14 [0.14,0.15]
+history noise 0.1 m             0.48 [0.46,0.50]      0.54 [0.50,0.58]      0.34 [0.32,0.35]      0.29 [0.28,0.30]
+history noise 0.2 m             0.80 [0.77,0.83]      0.91 [0.86,0.96]      0.63 [0.61,0.65]      0.59 [0.58,0.61]
+cvm4 (reference)                0.74 [0.69,0.79]      0.85 [0.82,0.88]      0.17 [0.16,0.18]      0.13 [0.09,0.16]
+hist, no map (reference)        0.51 [0.48,0.55]      0.45 [0.42,0.48]      0.12 [0.11,0.13]      0.06 [0.05,0.06]
+
+H8 COUNTERFACTUAL MAP EDITS (rules fixed in the docstring of inspect_model.py before the first run)
+H8a remove the obstacle at the stop point (C near, visible; n=505):
+    moves toward constant velocity by >= 0.05 m:  edit 86 %   control (2.5 m aside) 29 %
+    mean change of distance to CVM over 6 s: edit +1.458 m   control +0.040 m
+    rule: edit >= 60 % and edit - control >= 30 points  ->  PASS
+H8b put a wall 2.5 m ahead (A and E walking; n=222, 222 whose normal prediction crosses it):
+    no longer cross the wall: 0 %
+    mean change of the prediction: wall in the way 0.250 m   control wall 0.144 m
+    rule: >= 50 % and change >= 3 x control  ->  FAIL   (exploratory: outside the training scenes)

@@ -58,4 +58,28 @@ assert abs(tc[0, 0].item() - (-1.6 / 4)) < 1e-6 and abs(tc[0, 1].item() - (-3.6 
 assert abs(tc[99, 0].item() - (5.6 / 4)) < 1e-6 and abs(tc[99, 1].item() - (3.6 / 4)) < 1e-6
 assert abs(tc[1, 0].item() - tc[0, 0].item() - 0.2) < 1e-6          # next token = next COLUMN = +0.8 m in x
 print('scene token coordinates: ok')
+
+# ---- damage used in training (motion/damage_torch.py)
+from motion import damage_torch as DT  # noqa: E402
+assert 'full_dmg' in VARIANTS and 'hist_dmg' in VARIANTS
+big = torch.tensor([-1, 0, 100], dtype=torch.int8)[torch.randint(0, 3, (5, 80, 80))]
+z = torch.zeros(5)
+assert torch.equal(DT.geometric(big, z, z, z), big), 'zero damage must be the identity'
+sh = DT.geometric(big, torch.full((5,), 0.2), z, z)                                   # content moves 0.2 m = 2 columns in +x
+assert torch.equal(sh[:, :, 2:], big[:, :, :-2]) and (sh[:, :, :2] == -1).all(), 'shift by 0.2 m'
+sh = DT.geometric(big, z, torch.full((5,), -0.3), z)                                  # -0.3 m in y = 3 rows down in the array
+assert torch.equal(sh[:, :-3], big[:, 3:]) and (sh[:, -3:] == -1).all(), 'shift in y'
+frac = (DT.wrong_cells(big, torch.full((5,), 0.05)) != big).float().mean().item()
+assert 0.045 < frac < 0.055, frac
+hn, sft = DT.noisy_history(hist, torch.zeros(4))
+assert torch.allclose(hn, hist, atol=1e-6) and torch.allclose(sft, torch.zeros(4, 2), atol=1e-6), 'sigma 0 = identity'
+hn, sft = DT.noisy_history(hist, torch.full((4,), 0.1))
+assert hn[:, -1, :2].abs().max() < 1e-6 and hn.shape == hist.shape
+fut2 = torch.randn(4, N_FUT, 3)
+h3, c3, f3, r3 = DT.damage_batch(hist, crop, fut2, torch.randn(4, 2))
+assert h3.shape == hist.shape and c3.shape == crop.shape and c3.dtype == torch.int8 and f3.shape == fut2.shape
+assert torch.isfinite(h3).all() and torch.isfinite(f3).all() and set(c3.unique().tolist()) <= {-1, 0, 100}
+m = VARIANTS['full_dmg']().eval()
+assert m(h3, c3, r3).shape == (4, N_FUT, 2)
+print('training damage (shift, wrong cells, tracker noise, no map): ok')
 print('TORCH CHECK PASSED')

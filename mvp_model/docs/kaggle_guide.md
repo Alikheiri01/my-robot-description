@@ -67,6 +67,7 @@ Two runs. Every run starts from a clean folder, so results of the two runs never
 |---|---|---|---|
 | 1 (main) | `'main'` | `['full', 'hist', 'full_direct', 'hist_direct']` | the main test (H1-H4), residual and direct style |
 | 2 (ablations) | `'ablations'` | `['noocc', 'concat']` | H5 (obstacles or only the grey pattern) and H7 (is the transformer needed) |
+| 3 (damage) | `'dmg'` | `['full_dmg', 'hist_dmg']` | M5d: the same networks trained with damaged maps and noisy history (see steps.md) |
 
 **How to run (recommended, so your laptop can be closed):**
 1. Top right: **Save Version** -> **Save & Run All (Commit)** -> Advanced settings: Accelerator GPU -> Save.

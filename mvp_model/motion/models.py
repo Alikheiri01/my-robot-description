@@ -138,6 +138,10 @@ for _name, _make in _BASE.items():
     VARIANTS[_name] = (lambda m=_make: m(residual=True))
     VARIANTS[_name + '_direct'] = (lambda m=_make: m(residual=False))
 
+# "trained with damage" versions: the same networks, train.py damages the inputs while training (motion/damage_torch.py)
+VARIANTS['full_dmg'] = VARIANTS['full']
+VARIANTS['hist_dmg'] = VARIANTS['hist']
+
 
 def count_params(m):
     return sum(p.numel() for p in m.parameters() if p.requires_grad)

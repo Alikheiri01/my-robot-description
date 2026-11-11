@@ -18,6 +18,7 @@ Per seed and per fold k (5 folds, grouped by environment, stratified by scenario
       _shufall  crops swapped with any sample of the test fold (information only: does it only know the scenario?)
 
 Variants: full | hist (no crop, same depth) | noocc (obstacles shown as free) | concat (simple fusion) | robot
+          full_dmg / hist_dmg = full / hist trained with random input damage (motion/damage_torch.py)
           each also as  <name>_direct  = the network outputs the path itself instead of a correction to CVM
 Outputs in --out (default runs/):  oof_<variant>_s<seed>.npz  (+ _shufscn.npz, _shufall.npz)   keys: ids, pred (M,12,2)
                                    models/<variant>_s<seed>_f<fold>.pt  (trained weights, needed for the pictures and H8)
@@ -36,6 +37,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from motion.data import load_dataset  # noqa: E402
+from motion.damage_torch import damage_batch  # noqa: E402
 from motion.models import VARIANTS, count_params, flip_batch  # noqa: E402
 
 DEFAULT_DATASET = '../mvp_collection/datasets/mvp_v1'
@@ -118,6 +120,8 @@ def train_one(args, T, tr, va, seed, dev):
                     r2[:, 1] = -r2[:, 1]
                     h, c, f, r = h.clone(), c.clone(), f.clone(), r.clone()
                     h[m], c[m], f[m], r[m] = h2, c2, f2, r2
+            if args.variant.endswith('_dmg'):            # trained with damaged map and noisy history (validation stays clean)
+                h, c, f, r = damage_batch(h, c, f, r)
             pred = model(h, c, r)
             loss = (pred - f[:, :, :2]).norm(dim=2).mean()
             opt.zero_grad()
