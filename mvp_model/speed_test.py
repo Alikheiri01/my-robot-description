@@ -63,6 +63,11 @@ def main():
         lines.append(f'PyTorch, batch 32: mean {m / 32:.2f} ms per prediction')
     try:
         import onnxruntime as ort
+        # torch 2.0 cannot export aten::unflatten (used inside nn.MultiheadAttention). Same result with reshape, applied only here.
+        def _unflatten(self, dim, sizes):
+            dim = dim % self.dim()
+            return self.reshape(*self.shape[:dim], *sizes, *self.shape[dim + 1:])
+        torch.Tensor.unflatten = _unflatten
         onnx_path = Path('reports') / f'{args.variant}.onnx'
         onnx_path.parent.mkdir(exist_ok=True)
         torch.onnx.export(model, (h[:1], c[:1]), str(onnx_path), input_names=['hist', 'crop'], output_names=['pred'],
