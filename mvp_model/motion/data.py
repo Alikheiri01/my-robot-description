@@ -9,6 +9,7 @@ load_dataset() returns a dict `ds` (N = all samples; ds['usable'] selects the on
     fut  (N,12,3) float32  the label (0.5 s spacing, 6 s)
     crop (N,80,80) int8    -1 unknown, 0 free, 100 occupied; rows = y -4..4 m, cols = x -2..6 m, 0.1 m cells
     robot (N,2) float32    robot position in the pedestrian frame (NOT a model input by default)
+    robot_yaw (N,) float32 robot heading in the pedestrian frame [rad] (only for the wedge control, motion/wedge.py)
     scen, env, tmpl, ep, mode, ids   strings: 'B_corner', 'env_B_003', 'T2_corner', 'env_B_003_ep1', 'follow', unique id
     env_key (N,) str       'B_corner/env_B_003'  (the unit for splits and for the bootstrap)
     t_rel (N,) float       anchor time after walk start [s]
@@ -122,7 +123,7 @@ def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=Tr
     if not found:
         raise SystemExit(f'no environment with a passed run under {root}')
     files = [(sc, ed, run, f) for sc, ed, run in found for f in sorted((run / 'samples').glob('*.npz'))]
-    sig = f'{root.resolve()}:{len(files)}:{max(f.stat().st_mtime_ns for *_, f in files)}:{folds}:{seed}'
+    sig = f'v2:{root.resolve()}:{len(files)}:{max(f.stat().st_mtime_ns for *_, f in files)}:{folds}:{seed}'
     cpath = Path(cache_dir) / f'cache_{root.name}.npz'
     if cache and cpath.exists():
         try:
@@ -135,7 +136,7 @@ def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=Tr
         except Exception:  # noqa: BLE001
             pass
 
-    cols = {k: [] for k in ('hist', 'fut', 'crop', 'robot', 'scen', 'env', 'tmpl', 'ep', 'mode', 'ids', 't_rel',
+    cols = {k: [] for k in ('hist', 'fut', 'crop', 'robot', 'robot_yaw', 'scen', 'env', 'tmpl', 'ep', 'mode', 'ids', 't_rel',
                             'ev_future', 't_to_event', 'ev_visible', 'usable', 'speed_plan')}
     env_cache = {}
     skipped = 0
@@ -179,6 +180,7 @@ def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=Tr
             dx, dy = rb[0] - ax, rb[1] - ay
             c, s = np.cos(ayaw), np.sin(ayaw)
             robot = (c * dx + s * dy, -s * dx + c * dy)
+            ryaw = float((rb[2] - ayaw + np.pi) % (2 * np.pi) - np.pi)       # robot heading relative to the pedestrian's x axis
         except Exception:  # noqa: BLE001
             skipped += 1
             continue
@@ -186,6 +188,7 @@ def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=Tr
         cols['fut'].append(fu)
         cols['crop'].append(crop)
         cols['robot'].append(np.array(robot, np.float32))
+        cols['robot_yaw'].append(ryaw)
         cols['scen'].append(sc)
         cols['env'].append(ed.name)
         cols['tmpl'].append(str(env.get('template', '?')))
@@ -200,7 +203,7 @@ def load_dataset(root, cache=True, cache_dir='runs', folds=5, seed=0, verbose=Tr
         cols['speed_plan'].append(float((eps.get(eid) or {}).get('speed', np.nan)))
     ds = {}
     for k, v in cols.items():
-        if k in ('hist', 'fut', 'robot'):
+        if k in ('hist', 'fut', 'robot', 'robot_yaw'):
             ds[k] = np.stack(v).astype(np.float32)
         elif k == 'crop':
             ds[k] = np.stack(v).astype(np.int8)

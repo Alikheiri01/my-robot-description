@@ -441,7 +441,7 @@ def main():
     hist_ens = None
     if 'pics' in args.what or 'damage' in args.what:
         try:
-            hist_ens = Ensemble(args.models, 'hist', seeds, args.device)
+            hist_ens = Ensemble(args.models, args.variant.replace('full', 'hist') if args.variant.endswith(('_dmg', '_hn')) else 'hist', seeds, args.device)
         except SystemExit:
             print('[models] no hist models found: pictures without the hist line')
     lines = run(ds, ens, hist_ens, set(args.what.split(',')), Path(args.out), args.models, args.max_n)

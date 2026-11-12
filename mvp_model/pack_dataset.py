@@ -17,6 +17,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from motion.data import load_dataset  # noqa: E402
+from motion.wedge import coverage, wedge_masks  # noqa: E402
 
 
 def main():
@@ -29,6 +30,13 @@ def main():
     for k, v in ds.items():
         if not np.array_equal(v, back[k], equal_nan=v.dtype.kind == 'f'):
             sys.exit(f'CHECK FAILED: field {k} differs after packing')
+    wm = wedge_masks(ds['robot'], ds['robot_yaw'])
+    inside, seen = coverage(ds['crop'], wm, ds['usable'])
+    print(f'[pack] camera-cone check (wedge control): {inside * 100:.1f} % of the known crop cells lie inside the modelled camera cone; '
+          f'{seen * 100:.1f} % of the cone cells are known in the crop')
+    if inside < 0.9:
+        print('[pack] NOTE: below 90 % -> the real crop contains more than one instant camera view (or the pose/FOV model is off). '
+              'The wedge control is then only a weaker test; send me this line.')
     mb = dst.stat().st_size / 1e6
     print(f'[pack] wrote {dst}  ({mb:.1f} MB, {len(ds["ids"])} samples, {int(ds["usable"].sum())} usable) -- check passed')
 

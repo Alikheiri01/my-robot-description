@@ -61,7 +61,7 @@ def main():
     if not found:
         sys.exit(f'no oof_*.npz found under {args.runs}')
 
-    for test, ref, extras in (('full', 'hist', ('noocc', 'concat')), ('full_direct', 'hist_direct', ()), ('full_dmg', 'hist_dmg', ())):
+    for test, ref, extras in (('full', 'hist', ('noocc', 'concat')), ('full_direct', 'hist_direct', ()), ('full_dmg', 'hist_dmg', ()), ('full_hn', 'hist_hn', ())):
         if not (spec(found, test) and spec(found, ref)):
             print(f'[skip] {test}: files for {test} and/or {ref} not found')
             continue

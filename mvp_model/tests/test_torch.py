@@ -81,5 +81,8 @@ assert h3.shape == hist.shape and c3.shape == crop.shape and c3.dtype == torch.i
 assert torch.isfinite(h3).all() and torch.isfinite(f3).all() and set(c3.unique().tolist()) <= {-1, 0, 100}
 m = VARIANTS['full_dmg']().eval()
 assert m(h3, c3, r3).shape == (4, N_FUT, 2)
-print('training damage (shift, wrong cells, tracker noise, no map): ok')
+assert 'full_hn' in VARIANTS and 'hist_hn' in VARIANTS
+h4, c4, f4, r4 = DT.damage_batch(hist, crop, fut2, torch.randn(4, 2), map_damage=False)
+assert torch.equal(c4, crop), 'noise-only damage must not touch the map'
+print('training damage (shift, wrong cells, tracker noise, no map; noise-only variant): ok')
 print('TORCH CHECK PASSED')

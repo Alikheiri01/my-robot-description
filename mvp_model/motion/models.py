@@ -141,6 +141,9 @@ for _name, _make in _BASE.items():
 # "trained with damage" versions: the same networks, train.py damages the inputs while training (motion/damage_torch.py)
 VARIANTS['full_dmg'] = VARIANTS['full']
 VARIANTS['hist_dmg'] = VARIANTS['hist']
+VARIANTS['wedge'] = VARIANTS['full']           # same network; train.py gives it a crop that is only the camera cone (H11 control)
+VARIANTS['full_hn'] = VARIANTS['full']         # *_hn: trained with tracker noise on the history only (map untouched)
+VARIANTS['hist_hn'] = VARIANTS['hist']
 
 
 def count_params(m):

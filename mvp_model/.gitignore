@@ -1,4 +1,14 @@
+reports/
 runs/
 packed/
+# python
 __pycache__/
 *.pyc
+# trained weights, exports, data and archives (large; keep copies in your results zips, not in git)
+*.pt
+*.onnx
+*.npz
+*.zip
+*.gif
+*.mp4
+ 

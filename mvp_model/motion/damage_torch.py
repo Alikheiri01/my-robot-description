@@ -60,18 +60,21 @@ def noisy_history(h, sigma):
     return torch.cat([p, yaw[..., None]], dim=2), shift
 
 
-def damage_batch(h, c, f, r):
-    """h (B,8,3), c (B,80,80) int8, f (B,12,3), r (B,2) -> damaged copies (same shapes)."""
+def damage_batch(h, c, f, r, map_damage=True):
+    """h (B,8,3), c (B,80,80) int8, f (B,12,3), r (B,2) -> damaged copies (same shapes).
+    map_damage=False: only the tracker noise on the history (variants *_hn); True: map damage and noise (*_dmg)."""
     B, dev = h.shape[0], h.device
     u = lambda: torch.rand(B, device=dev)
-    drop = u() < P_MAP_DROP
-    geo = (~drop) & (u() < P_GEOM)
-    mag, ang = u() * MAX_SHIFT, u() * 2 * math.pi
-    dx, dy = mag * torch.cos(ang) * geo, mag * torch.sin(ang) * geo
-    deg = (u() * 2 - 1) * MAX_ROT_DEG * geo
-    c2 = torch.where(geo[:, None, None], geometric(c, dx, dy, deg), c)
-    c2 = wrong_cells(c2, u() * MAX_WRONG * (~drop))
-    c2 = torch.where(drop[:, None, None], torch.full_like(c2, UNK), c2)
+    c2 = c
+    if map_damage:
+        drop = u() < P_MAP_DROP
+        geo = (~drop) & (u() < P_GEOM)
+        mag, ang = u() * MAX_SHIFT, u() * 2 * math.pi
+        dx, dy = mag * torch.cos(ang) * geo, mag * torch.sin(ang) * geo
+        deg = (u() * 2 - 1) * MAX_ROT_DEG * geo
+        c2 = torch.where(geo[:, None, None], geometric(c, dx, dy, deg), c)
+        c2 = wrong_cells(c2, u() * MAX_WRONG * (~drop))
+        c2 = torch.where(drop[:, None, None], torch.full_like(c2, UNK), c2)
     levels = torch.tensor(NOISE_LEVELS, device=dev, dtype=h.dtype)
     sigma = levels[torch.multinomial(torch.tensor(NOISE_P, device=dev), B, replacement=True)]
     h2, shift = noisy_history(h, sigma)

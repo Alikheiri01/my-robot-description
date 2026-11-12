@@ -10,8 +10,9 @@ Results so far: `docs/results.md`.
 | M2 | networks run (torch check, smoke runs) | done |
 | M3 | main experiment: full vs hist, residual and direct | done (H1-H4, H6 PASS) |
 | M4 | ablations: noocc, concat | done (H5 PASS, H7 transformer slightly better) |
-| M5 | look at it + robustness: pictures, damaged maps, history noise, counterfactual edits (H8), seed check, wedge-only leak check (H11), damage-trained model | M5a/M5b done (report received), M5c/M5d/M5e not done |
-| M6 | speed on the laptop (H9), final model, replay demo + plots, ideas for the real project, advisor presentation | not done |
+| M5 | look at it + robustness: pictures, damaged maps, history noise, counterfactual edits (H8), seed check, wedge-only leak check (H11), damage-trained model | done (M5a-e; `full_hn` PASSED = final model; seed check, H11 and H10 reported) |
+| LAST-RUN | one Kaggle notebook: wedge (H11), final models on all data, transfer (H10) | done (H11 no leak, H10 partial transfer) |
+| M6 | speed on the laptop (H9), replay demo + plots, ideas for the real project, advisor presentation | scripts ready (speed_test.py, make_demo.py), not run; ideas document and presentation not written |
 
 ## Where things run
 Laptop: tests, packing, evaluation (`make_reports.py`), pictures, counterfactual and damaged-map tests (they only run the trained models, no training; CPU is enough). Kaggle: anything that trains. Guide: `kaggle-guide.md`.
@@ -57,20 +58,35 @@ Pass: the files exist and the self-check is ok.
 **M5c Seed check** (`python3 seed_check.py`): the transformer edge over concat is 1.5 cm, about the size of the seed noise. We only keep "full is better than concat" if the sign is the same for every seed and most folds; otherwise the thesis says "not distinguishable".
 
 **M5d Train with damage (UNCONDITIONAL, one Kaggle run, about 25 minutes).** The levels are fixed in `motion/damage_torch.py` (chosen from the M5a table: shift up to 0.3 m, rotation up to 5 degrees, 0-3 % wrong cells, 15 % samples without any map, tracker noise 0 / 0.05 / 0.1 m). Two versions are trained, `full_dmg` and `hist_dmg` (the same networks as `full` and `hist`; only the training inputs are damaged).
-In the notebook change cell 1 only: `RUN_NAME = 'dmg'`, `VARIANTS = ['full_dmg', 'hist_dmg']`. Then on the laptop: unzip into `runs/run_3`, `python3 make_reports.py` (it now also builds `reports/eval_full_dmg.txt`), and `python3 inspect_model.py --models runs/run_3 --variant full_dmg --out reports/inspect_dmg`.
+In the notebook change cell 1 only: `RUN_NAME = 'dmg'`, `VARIANTS = ['full_dmg', 'hist_dmg']`. Then on the laptop: unzip into `runs/run_3`, `python3 make_reports.py` (it now also builds `reports/eval_full_dmg.txt`), and `python3 inspect_model.py --models runs --variant full_dmg --out reports/inspect_dmg` (`--models runs` on purpose: it finds the model files by name and the clean-trained `hist` predictions of run 1 for the reference rows; under tracker noise the opponent is `hist_dmg`).
 **Pass rule (fixed now, before the run):** (a) on clean input, `full_dmg` B near and C near ADE@3s are at most 5 % worse than `full` (0.19 / 0.19); (b) with no map, `full_dmg` is not more than 10 % worse than `hist` (0.51 / 0.45); (c) in every map-damage row of its table (shift, wrong cells, rotation), `full_dmg` is better than `hist` on B near and C near. History noise rows are reported, no verdict.
 
-**M5e Wedge-only leak check (H11, one Kaggle run)**: in B, `noocc` already gets most of the gain, so part of it may come from WHERE the robot stands (the grey/known pattern), not from geometry. Control: a model whose crop is only the robot's visibility wedge in an empty world (known inside the camera cone, unknown outside, no walls), built from the recorded robot pose. If it beats `hist` clearly, robot placement leaks the answer. I need one fact first: what `robot_pose_odom` contains (see "what I need from you" in the chat) and the camera field of view.
+**M5d result (2026-11-11): NOT PASSED** (clean B 0.31 vs 0.19; no-map C 0.73 vs 0.45). Noise robustness improved a lot, map robustness did not (details in `results.md`). Final model stays `full`.
 
-## M6  Wrap-up and what the MVP delivers (about 2 days)
-**M6a Speed on the laptop (H9, information):** milliseconds per prediction and parameter count (282 k) on CPU, PyTorch and ONNX. The Jetson number is NOT part of the MVP (moved to the real project).
-**M6b Final model:** one Kaggle run training the chosen version (`full` or `full_dmg`, decided by M5d) on ALL 95 environments. This is the model used in the demo.
-**M6c Replay demo (my script `make_demo.py`):** short videos/GIFs of held-out episodes: the map, the history, the truth, and the predictions of CVM, `hist` and the final model, frame by frame. Plus a plot sheet for the advisor: ADE vs time to event, per scenario against CVM, the ablation bars, the wrong-map test, the damage chart.
-**M6d Ideas document for the real project** (`docs/real-project-ideas.md`): built from `mvp-to-final-checklist`, the reading notes and the lessons of this MVP (more diverse environments, causes visible earlier, bigger obstacles in A, robot viewpoint coverage, map-confidence fallback, real tracker noise, Jetson speed, MPC integration), with details per item.
-**M6e Decision: MPC in the MVP or prediction only?** My recommendation: prediction only. Reason: the data has the robot parked or following 3-5 m behind; in closed loop it approaches, crosses and stops near pedestrians, which the model has never seen, so a closed-loop result now would mostly measure that gap. The closed-loop test goes into the real project with the viewpoint coverage designed into the data. If you want an MPC in the MVP anyway, it needs its own steps (an MPC with CVM prediction as baseline, then the same MPC with this predictor).
-**M6f Advisor presentation** (Slides): the story is problem, idea, data, model, hypotheses and verdicts, what works (replay demo, plots, comparison with CVM), honest limits (simulator-defined behaviour, damaged-map risk, transformer edge small), and what the real project will do.
-**M6g Write-up:** results and decision into the project and memory; commit code, docs and reports.
-Optional, only if time: H10 transfer (train without one scenario, test on it).
+**M5d2 result (2026-11-11): PASSED.** `full_hn` (tracker noise only): clean B 0.20 / C 0.19 (rule: at most 0.20), under noise 0.1 m better than constant velocity AND `hist_hn` in all four groups, under 0.2 m far better than constant velocity in A and E. **`full_hn` is the final model.** Details in `results.md`. The remaining weakness: with NO map it is worse than before (B 0.66, C 0.97, E 0.21 against constant velocity 0.13), so the real system needs a map-confidence signal and a fallback to `hist_hn` or constant velocity.
+
+**M5e Wedge-only leak check (H11): part of the LAST-RUN notebook (below).** The robot camera is known now (73 degree horizontal FOV, 8 m range, from `depth_camera.xacro`). `pack_dataset.py` also prints how well this camera model fits the real crops ("camera-cone check").
+
+## LAST-RUN: everything that is left on Kaggle, in ONE notebook (about 1 hour, run once)
+Preparation on the laptop (about 10 minutes):
+1. Replace/add the files from the chat (`motion/data.py`, `motion/wedge.py`, `motion/models.py`, `train.py`, `pack_dataset.py`, `wedge_check.py`, `transfer_check.py`, `make_reports.py`, `tests/test_final.py`, `kaggle/kaggle_final.ipynb`, docs).
+2. `python3 tests/test_final.py`, `python3 tests/test_all.py` and `python3 tests/test_torch.py` must pass.
+3. `python3 pack_dataset.py` writes the NEW packed file. **Read the line "camera-cone check"** and send it to me with your next message (it says whether the wedge control is a fair test; below 90 % it is weaker).
+4. Make the code zip as before and upload code + the new packed file as a new version of your Kaggle dataset.
+On Kaggle: import `kaggle/kaggle_final.ipynb`, add the dataset, GPU T4, **Save Version -> Save & Run All**. Close the page. It trains (1) `wedge` (H11), (2) `full_hn` and `hist_hn` on ALL 95 environments, (3) `full_hn` and `hist_hn` with scenario B, C or D held out (H10). Download `results_final.zip`, unzip into `runs/run_5`.
+On the laptop:
+    python3 wedge_check.py        # H11 verdict, needs the clean-trained runs 1 and 2 in runs/ too
+    python3 transfer_check.py     # H10 table (exploratory)
+**H11 rule** (fixed in evaluation-plan.md): LEAK if wedge minus hist on B near has its upper bound below 0 and the gain is at least 5 %. **H10:** report only.
+The final models are `runs/run_5/runs/models/full_hn_final_s<seed>.pt` and `hist_hn_final_s<seed>.pt` (keep them; the speed test and the real project use them).
+
+## M6  Wrap-up and what the MVP delivers (about 2 days, no more Kaggle runs)
+**M6a Speed on the laptop (H9, information), `python3 speed_test.py`:** milliseconds per prediction and parameter count (282 k) on CPU, PyTorch and ONNX, for the final `full_hn`. The Jetson number is NOT part of the MVP.
+**M6b Replay demo, `python3 make_demo.py` (GIFs in `reports/demo/`; `python3 tests/test_demo.py` first):** short videos/GIFs of held-out episodes (each sample predicted by the fold model that never saw its environment): the map, the history, the truth, and the predictions of constant velocity, `hist_hn` and `full_hn`, frame by frame. Plus a plot sheet for the advisor: ADE vs time to event, per scenario against constant velocity, the ablation bars, the wrong-map test, the damage chart, the noise chart.
+**M6c Ideas document for the real project** (`docs/real-project-ideas.md`): built from `mvp-to-final-checklist`, the reading notes and the lessons of this MVP (more diverse environments, causes visible earlier, bigger obstacles in A, robot viewpoint coverage, a map-confidence signal with fallback, real tracker noise and filtering, map registration accuracy, Jetson speed, MPC integration), with details per item.
+**M6d Decision: MPC in the MVP or prediction only?** Recommendation: prediction only (the data has the robot parked or 3-5 m behind; in closed loop it approaches, crosses and stops near pedestrians, which the model has never seen).
+**M6e Advisor presentation** (Slides): problem, idea, data, model, hypotheses and verdicts, what works (replay demo, plots, comparison with constant velocity), honest limits (simulator-defined behaviour, needs an accurate map, transformer edge small, no transfer if H10 says so), what the real project will do.
+**M6f Write-up:** results and decision into the project and memory; commit code, docs and reports.
 
 ## Time plan
-M5: 1 to 1.5 days (the two Kaggle runs M5d and M5e are about 20-30 minutes each). M6: 2 days (the ideas document and the presentation are the bulk).
+LAST-RUN: half a day (10 minutes of preparation, about 1 hour of Kaggle in the background). M6: 2 days (the ideas document and the presentation are the bulk).

@@ -18,8 +18,11 @@ Per seed and per fold k (5 folds, grouped by environment, stratified by scenario
       _shufall  crops swapped with any sample of the test fold (information only: does it only know the scenario?)
 
 Variants: full | hist (no crop, same depth) | noocc (obstacles shown as free) | concat (simple fusion) | robot
-          full_dmg / hist_dmg = full / hist trained with random input damage (motion/damage_torch.py)
+          wedge = the full network with a crop that is only the robot's camera cone (H11 leak control, motion/wedge.py)
+          full_dmg / hist_dmg = full / hist trained with random map damage + tracker noise; full_hn / hist_hn = tracker noise only
+          (motion/damage_torch.py)
           each also as  <name>_direct  = the network outputs the path itself instead of a correction to CVM
+Modes: default = cross-validation | --final = train on all data (models/<variant>_final_s<seed>.pt) | --holdout B,C,D = transfer test
 Outputs in --out (default runs/):  oof_<variant>_s<seed>.npz  (+ _shufscn.npz, _shufall.npz)   keys: ids, pred (M,12,2)
                                    models/<variant>_s<seed>_f<fold>.pt  (trained weights, needed for the pictures and H8)
 A seed whose oof file already exists is skipped, so an interrupted run can simply be started again.
@@ -39,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from motion.data import load_dataset  # noqa: E402
 from motion.damage_torch import damage_batch  # noqa: E402
 from motion.models import VARIANTS, count_params, flip_batch  # noqa: E402
+from motion.wedge import wedge_crops  # noqa: E402
 
 DEFAULT_DATASET = '../mvp_collection/datasets/mvp_v1'
 
@@ -73,8 +77,13 @@ def as_idx(j, dev):
     return torch.as_tensor(np.asarray(j), dtype=torch.long, device=dev)
 
 
-def make_tensors(ds, dev):
-    return dict(hist=torch.tensor(ds['hist'], device=dev), crop=torch.tensor(ds['crop'], device=dev),
+def make_tensors(ds, dev, variant=''):
+    crop = ds['crop']
+    if variant == 'wedge':                         # H11 control: the crop is only the robot's camera cone (no walls)
+        if 'robot_yaw' not in ds:
+            sys.exit('the wedge control needs robot_yaw in the data: run pack_dataset.py again (new motion/data.py) and upload the new file')
+        crop = wedge_crops(ds['robot'], ds['robot_yaw'])
+    return dict(hist=torch.tensor(ds['hist'], device=dev), crop=torch.tensor(crop, device=dev),
                 fut=torch.tensor(ds['fut'], device=dev), robot=torch.tensor(ds['robot'], device=dev))
 
 
@@ -120,8 +129,8 @@ def train_one(args, T, tr, va, seed, dev):
                     r2[:, 1] = -r2[:, 1]
                     h, c, f, r = h.clone(), c.clone(), f.clone(), r.clone()
                     h[m], c[m], f[m], r[m] = h2, c2, f2, r2
-            if args.variant.endswith('_dmg'):            # trained with damaged map and noisy history (validation stays clean)
-                h, c, f, r = damage_batch(h, c, f, r)
+            if args.variant.endswith(('_dmg', '_hn')):   # trained with damaged input (validation stays clean)
+                h, c, f, r = damage_batch(h, c, f, r, map_damage=args.variant.endswith('_dmg'))
             pred = model(h, c, r)
             loss = (pred - f[:, :, :2]).norm(dim=2).mean()
             opt.zero_grad()
@@ -144,6 +153,48 @@ def train_one(args, T, tr, va, seed, dev):
     return model, best
 
 
+def run_final(args, ds, T, dev, out):
+    """The model the robot / the demo will use: trained on ALL usable samples (a validation split of 1/8 of the
+    ENVIRONMENTS is kept only for early stopping). No test result: the cross-validation results are the evidence."""
+    u = ds['usable']
+    for seed in [int(s) for s in args.seeds.split(',')]:
+        path = out / 'models' / f'{args.variant}_final_s{seed}.pt'
+        if path.exists() and not args.redo:
+            print(f'[final] seed {seed}: {path} exists, skipped')
+            continue
+        t0 = time.time()
+        tr_m, va_m = split_val(ds, u, seed * 100 + 99)
+        tr, va = np.nonzero(tr_m)[0], np.nonzero(va_m)[0]
+        model, best = train_one(args, T, tr, va, seed, dev)
+        torch.save(model.state_dict(), path)
+        print(f'[final] {args.variant} seed {seed}: train {len(tr)}  val {len(va)}  val ADE {best:.3f}  ({time.time() - t0:.0f} s) -> {path}')
+
+
+def run_holdout(args, ds, T, dev, out):
+    """H10 transfer: train on all scenarios except S, test on S (never seen). One oof file per held-out scenario and seed."""
+    u = ds['usable']
+    first = np.array([s[0] for s in ds['scen']])
+    for S in [x.strip() for x in args.holdout.split(',')]:
+        te = np.nonzero(u & (first == S))[0]
+        if len(te) == 0:
+            print(f'[holdout] no samples for scenario {S}, skipped')
+            continue
+        for seed in [int(s) for s in args.seeds.split(',')]:
+            base = out / f'oof_{args.variant}_hold{S}_s{seed}.npz'
+            if base.exists() and not args.redo:
+                print(f'[holdout] {base} exists, skipped')
+                continue
+            t0 = time.time()
+            tr_m, va_m = split_val(ds, u & (first != S), seed * 100 + 7)
+            tr, va = np.nonzero(tr_m)[0], np.nonzero(va_m)[0]
+            model, best = train_one(args, T, tr, va, seed, dev)
+            pred = predict(model, T, te)
+            np.savez(base, ids=ds['ids'][te], pred=pred)
+            err = np.linalg.norm(pred - ds['fut'][te, :, :2], axis=2).mean()
+            print(f'[holdout] {args.variant} held out {S} seed {seed}: train {len(tr)}  val {len(va)}  test {len(te)}  '
+                  f'val ADE {best:.3f}  test ADE@6s {err:.3f}  ({time.time() - t0:.0f} s)')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('dataset', nargs='?', default=DEFAULT_DATASET)
@@ -159,6 +210,8 @@ def main():
     ap.add_argument('--no-flip', action='store_true')
     ap.add_argument('--out', default='runs')
     ap.add_argument('--device', default='auto', help='auto (GPU if there is one, else CPU) | cpu | cuda')
+    ap.add_argument('--final', action='store_true', help='train on ALL usable samples (no test fold) and save models/<variant>_final_s<seed>.pt')
+    ap.add_argument('--holdout', default=None, help='transfer test (H10): letters of scenarios to hold out one at a time, e.g. B,C,D')
     ap.add_argument('--redo', action='store_true', help='train again even if the output file of a seed already exists')
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
@@ -169,7 +222,7 @@ def main():
         if dev.type == 'cuda' and not torch.cuda.is_available():
             sys.exit('--device cuda was asked for, but no GPU is available here (use --device cpu or auto)')
     ds = load_dataset(args.dataset, folds=args.folds, cache_dir=args.out)
-    T = make_tensors(ds, dev)
+    T = make_tensors(ds, dev, args.variant)
     u = ds['usable']
     out = Path(args.out)
     if args.fold is not None:                      # a smoke run never mixes with real results
@@ -179,6 +232,12 @@ def main():
     print(f'[train] variant {args.variant}  device {dev}{gpu}  parameters {count_params(VARIANTS[args.variant]())}')
     uses_crop = not args.variant.startswith('hist')
     (out / 'models').mkdir(exist_ok=True)
+    if args.final:
+        run_final(args, ds, T, dev, out)
+        return
+    if args.holdout:
+        run_holdout(args, ds, T, dev, out)
+        return
     for seed in [int(s) for s in args.seeds.split(',')]:
         if (out / f'oof_{args.variant}_s{seed}.npz').exists() and args.fold is None and not args.redo:
             print(f'[train] seed {seed}: {out / f"oof_{args.variant}_s{seed}.npz"} exists, skipped (--redo to train again)')
