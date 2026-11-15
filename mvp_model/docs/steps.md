@@ -12,7 +12,7 @@ Results so far: `docs/results.md`.
 | M4 | ablations: noocc, concat | done (H5 PASS, H7 transformer slightly better) |
 | M5 | look at it + robustness: pictures, damaged maps, history noise, counterfactual edits (H8), seed check, wedge-only leak check (H11), damage-trained model | done (M5a-e; `full_hn` PASSED = final model; seed check, H11 and H10 reported) |
 | LAST-RUN | one Kaggle notebook: wedge (H11), final models on all data, transfer (H10) | done (H11 no leak, H10 partial transfer) |
-| M6 | speed on the laptop (H9), replay demo + plots, ideas for the real project, advisor presentation | scripts ready (speed_test.py, make_demo.py), not run; ideas document and presentation not written |
+| M6 | speed on the laptop (H9), replay demo + plots, ideas for the real project, advisor presentation | speed (2.4 ms), replay GIFs and presentation videos done; figures folder and architecture.md written; ideas document and presentation deck not written |
 
 ## Where things run
 Laptop: tests, packing, evaluation (`make_reports.py`), pictures, counterfactual and damaged-map tests (they only run the trained models, no training; CPU is enough). Kaggle: anything that trains. Guide: `kaggle-guide.md`.
@@ -84,7 +84,7 @@ The final models are `runs/run_5/runs/models/full_hn_final_s<seed>.pt` and `hist
 **M6a Speed on the laptop (H9, information), `python3 speed_test.py`:** milliseconds per prediction and parameter count (282 k) on CPU, PyTorch and ONNX, for the final `full_hn`. The Jetson number is NOT part of the MVP.
 **M6b Replay demo, `python3 make_demo.py` (GIFs in `reports/demo/`; `python3 tests/test_demo.py` first):** short videos/GIFs of held-out episodes (each sample predicted by the fold model that never saw its environment): the map, the history, the truth, and the predictions of constant velocity, `hist_hn` and `full_hn`, frame by frame. Plus a plot sheet for the advisor: ADE vs time to event, per scenario against constant velocity, the ablation bars, the wrong-map test, the damage chart, the noise chart.
 **M6c Ideas document for the real project** (`docs/real-project-ideas.md`): built from `mvp-to-final-checklist`, the reading notes and the lessons of this MVP (more diverse environments, causes visible earlier, bigger obstacles in A, robot viewpoint coverage, a map-confidence signal with fallback, real tracker noise and filtering, map registration accuracy, Jetson speed, MPC integration), with details per item.
-**M6d Decision: MPC in the MVP or prediction only?** Recommendation: prediction only (the data has the robot parked or 3-5 m behind; in closed loop it approaches, crosses and stops near pedestrians, which the model has never seen).
+**M6d Decision (made 2026-11-15: prediction only, MPC out of scope for the MVP):** Recommendation: prediction only (the data has the robot parked or 3-5 m behind; in closed loop it approaches, crosses and stops near pedestrians, which the model has never seen).
 **M6e Advisor presentation** (Slides): problem, idea, data, model, hypotheses and verdicts, what works (replay demo, plots, comparison with constant velocity), honest limits (simulator-defined behaviour, needs an accurate map, transformer edge small, no transfer if H10 says so), what the real project will do.
 **M6f Write-up:** results and decision into the project and memory; commit code, docs and reports.
 
